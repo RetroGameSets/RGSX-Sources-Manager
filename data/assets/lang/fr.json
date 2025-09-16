@@ -1,0 +1,100 @@
+{
+  "desc.main": "Une seule page pour : scraper des jeux, éditer systems_list.json, éditer les plateformes et générer un ZIP (systems_list.json, images/, games/).",
+  "tab.scrape": "Scraper",
+  "tab.systems": "Plateformes (system_list.json)",
+  "tab.games": "Jeux (games/NomPlateform.json)",
+  "tab.package": "Package ZIP",
+
+  "label.platform_name": "platform_name",
+  "label.folder": "folder",
+  "label.platform_image": "platform_image",
+  "label.platform_image_replace": "platform_image (remplacer)",
+  "label.file_platform": "Fichier plateforme",
+  "label.game_name": "Nom/Archive",
+  "label.url": "URL",
+  "label.size": "Taille",
+  "label.per_page": "Par page",
+  "label.extensions_detected": "Extensions détectées :",
+
+  "btn.add": "Ajouter",
+  "btn.add_line": "Ajouter une ligne",
+  "btn.clear_platforms": "Vider la liste des plateformes",
+  "btn.clear_games": "Vider la liste des jeux",
+  "btn.modify": "Modifier",
+  "btn.delete": "Supprimer",
+  "btn.save": "Enregistrer",
+  "btn.cancel": "Annuler",
+  "btn.view": "Voir",
+  "btn.build_zip": "Créer le ZIP (games.zip)",
+  "btn.download_systems": "Télécharger systems_list.json (seul)",
+  "btn.scrape": "Scraper",
+  "btn.use_official_base": "Utiliser base RGSX officielle",
+  "btn.load": "Charger",
+  "btn.scrape_go": "Scraper",
+  "btn.attach_platform": "Attacher à la plateforme",
+
+  "confirm.clear_platforms": "Vider toutes les plateformes ?",
+  "confirm.clear_games": "Vider tous les jeux de toutes les plateformes ?",
+  "confirm.delete_entry": "Supprimer cette entrée ?",
+  "confirm.delete_platform": "Supprimer cette plateforme de la liste ?",
+  "confirm.delete_row": "Supprimer cette ligne ?",
+
+  "pagination.prev": "« Préc",
+  "pagination.next": "Suiv »",
+  "pagination.page": "Page",
+
+  "msg.systems.new": "Nouveau systems_list.json initialisé (vide).",
+  "msg.systems.file_loaded": "Fichier chargé.",
+  "msg.systems.added": "Plateforme ajoutée.",
+  "msg.systems.updated": "Plateforme mise à jour.",
+  "msg.systems.deleted": "Supprimé.",
+  "msg.games.attached": "Jeux attachés à %s",
+  "msg.games.loaded_platforms": "Plateforme(s) chargée(s): %d",
+  "msg.games.row_added": "Ligne ajoutée.",
+  "msg.games.row_updated": "Ligne mise à jour.",
+  "msg.games.row_deleted": "Ligne supprimée.",
+  "msg.games.platform_deleted": "Plateforme supprimée: %s",
+  "msg.games.all_cleared": "Toutes les listes de jeux ont été vidées.",
+
+  "err.missing_params": "Paramètres manquants.",
+  "err.json_invalid": "JSON invalide.",
+  "err.upload_failed": "Upload échoué.",
+  "err.fields_required": "platform_name et folder requis.",
+  "err.index_invalid": "Index invalide.",
+  "err.select_valid_platform_file": "Sélectionnez un fichier plateforme valide.",
+  "err.cannot_update_row": "Impossible de mettre à jour la ligne.",
+  "err.file_not_selected": "Aucun fichier sélectionné.",
+  "err.platform_file_missing": "Fichier plateforme introuvable.",
+  "err.too_many_files": "Vous avez sélectionné %d fichiers. Maximum autorisé: %d. Pour charger plus de 20 fichiers, utilisez un ZIP.",
+  "err.json_invalid_or_not_array": "JSON invalide ou non tableau.",
+  "err.temp_file_missing": "Fichier temporaire manquant ou illisible.",
+  "err.select_platform": "Choisir une plateforme",
+
+  "warn.maybe_truncated": "Attention: il se peut que la sélection ait été tronquée par la limite PHP max_file_uploads=%d. Pour charger beaucoup de fichiers, utilisez plutôt un ZIP.",
+
+  "table.systems.summary": "Systèmes %d-%d sur %d",
+  "table.games.lines": "%d lignes",
+
+  "misc.no_image": "—",
+  "misc.loading": "Chargement…",
+  "misc.attached_system_added": ", système ajouté/mis en place: %s"
+  ,"heading.current_state": "État actuel"
+  ,"stats.systems": "Systèmes: %d entrée(s)"
+  ,"stats.platforms_loaded": "Plateformes chargées: %d fichier(s)"
+  ,"stats.images_in_zip": "Images: %d fichier(s) dans le ZIP"
+  ,"placeholder.platform_name": "Nom plateforme"
+  ,"scrape.import_label": "Importer DATA ZIP (fichier ou URL)"
+  ,"scrape.expected_content": "Contenu attendu: systems_list.json, games/*.json, images/*"
+  ,"scrape.urls_placeholder": "Collez des URLs (1fichier / myrient / archive.org)"
+  ,"scrape.supported": "Supporté: https://archive.org/download/*, https://1fichier.com/?*, https://myrient.erista.me/*."
+  ,"scrape.password_label": "Mot de passe (1fichier - optionnel)"
+  ,"scrape.password_placeholder": "Laisser vide si non nécessaire"
+  ,"scrape.password_help": "Si l'URL 1fichier est un dossier protégé, le mot de passe sera utilisé pour déverrouiller la page ([PW] dans le debug)."
+  ,"btn.attach_all": "Ajouter tous »"
+  ,"scrape.results": "Résultats"
+  ,"scrape.source": "Source"
+  ,"scrape.files_count": "%d fichier(s)"
+  ,"scrape.urls_label": "URLs ou HTML"
+  ,"placeholder.select_platform": "Plateforme..."
+  ,"placeholder.select_folder": "Dossier..."
+}

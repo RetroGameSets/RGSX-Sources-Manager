@@ -1,0 +1,114 @@
+[2025-09-15 18:44:34] Request: GET /data/rgsx_sources_manager.php
+[2025-09-15 18:44:41] Request: POST /data/rgsx_sources_manager.php POST action: import_data_zip
+[2025-09-15 18:44:50] Request: POST /data/rgsx_sources_manager.php POST action: import_data_zip
+[2025-09-15 18:47:37] Request: POST /data/rgsx_sources_manager.php POST action: import_data_zip
+[2025-09-15 18:47:43] Request: POST /data/rgsx_sources_manager.php POST action: import_data_zip
+[2025-09-15 18:48:31] Request: POST /data/rgsx_sources_manager.php POST action: import_data_zip
+[2025-09-15 18:52:51] Request: GET /data/rgsx_sources_manager.php
+[2025-09-15 18:53:01] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=10 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"10"}
+[2025-09-15 18:53:03] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_per_page=10&systems_page=2 GET: {"active_tab":"tab-systems","systems_per_page":"10","systems_page":"2"}
+[2025-09-15 18:53:05] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_per_page=10&systems_page=3 GET: {"active_tab":"tab-systems","systems_per_page":"10","systems_page":"3"}
+[2025-09-15 18:53:12] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=50 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"50"}
+[2025-09-15 18:53:14] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-15 18:53:25] Request: GET /data/rgsx_sources_manager.php?preview_image=BIOS.png GET: {"preview_image":"BIOS.png"}
+[2025-09-15 18:53:28] Request: GET /data/rgsx_sources_manager.php?preview_image=Commodore%20Amiga%20CDTV.png GET: {"preview_image":"Commodore Amiga CDTV.png"}
+[2025-09-15 18:53:39] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Apple%20IIGS.json GET: {"render_games_table":"1","file":"Apple IIGS.json"}
+[2025-09-15 18:53:51] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Apple%20IIGS.json&page=2 GET: {"render_games_table":"1","file":"Apple IIGS.json","page":"2"}
+[2025-09-15 18:53:53] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Apple%20IIGS.json&page=3 GET: {"render_games_table":"1","file":"Apple IIGS.json","page":"3"}
+[2025-09-15 18:53:58] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Apple%20IIGS.json&page=2 GET: {"render_games_table":"1","file":"Apple IIGS.json","page":"2"}
+[2025-09-15 18:54:00] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Apple%20IIGS.json&page=3 GET: {"render_games_table":"1","file":"Apple IIGS.json","page":"3"}
+[2025-09-15 18:54:05] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Emerson%20Arcadia%202001.json GET: {"render_games_table":"1","file":"Emerson Arcadia 2001.json"}
+[2025-09-15 18:54:08] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=NEC%20PC%20Engine.json GET: {"render_games_table":"1","file":"NEC PC Engine.json"}
+[2025-09-15 18:54:11] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=NEC%20PC%20Engine.json&page=2 GET: {"render_games_table":"1","file":"NEC PC Engine.json","page":"2"}
+[2025-09-15 18:54:15] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=NEC%20PC%20Engine%20SuperGrafx.json GET: {"render_games_table":"1","file":"NEC PC Engine SuperGrafx.json"}
+[2025-09-15 18:54:17] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Mattel%20Intellivision.json GET: {"render_games_table":"1","file":"Mattel Intellivision.json"}
+[2025-09-15 18:54:20] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Commodore%20Amiga%20CD32.json GET: {"render_games_table":"1","file":"Commodore Amiga CD32.json"}
+[2025-09-15 18:58:22] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-15 18:58:31] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Atom.json GET: {"render_games_table":"1","file":"Atom.json"}
+[2025-09-15 18:58:39] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Bally%20Astrocade.json GET: {"render_games_table":"1","file":"Bally Astrocade.json"}
+[2025-09-15 18:58:41] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Nintendo%20Game%26Watch.json GET: {"render_games_table":"1","file":"Nintendo Game&Watch.json"}
+[2025-09-15 18:59:11] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Magnavox%20Odyssey%202.json GET: {"render_games_table":"1","file":"Magnavox Odyssey 2.json"}
+[2025-09-15 19:01:38] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-15 19:01:59] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Atari%207800.json GET: {"render_games_table":"1","file":"Atari 7800.json"}
+[2025-09-15 19:02:16] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-15 19:02:20] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Atari%207800.json GET: {"render_games_table":"1","file":"Atari 7800.json"}
+[2025-09-15 19:02:28] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Commodore%20Plus%204.json GET: {"render_games_table":"1","file":"Commodore Plus 4.json"}
+[2025-09-15 19:03:18] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Fairchild%20Channel%20F.json GET: {"render_games_table":"1","file":"Fairchild Channel F.json"}
+[2025-09-15 19:03:24] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=Final%20Burn%20Neo.json GET: {"render_games_table":"1","file":"Final Burn Neo.json"}
+[2025-09-15 19:11:14] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-15 19:11:19] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=-%20BIOS%20by%20TMCTV%20-.json GET: {"render_games_table":"1","file":"- BIOS by TMCTV -.json"}
+[2025-09-15 19:11:22] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=3DO%20Interactive%20Multiplayer.json GET: {"render_games_table":"1","file":"3DO Interactive Multiplayer.json"}
+[2025-09-15 19:14:01] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-15 19:14:15] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=3DO%20Interactive%20Multiplayer.json GET: {"render_games_table":"1","file":"3DO Interactive Multiplayer.json"}
+[2025-09-15 19:19:46] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-15 19:19:51] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&lang=en GET: {"active_tab":"tab-systems","lang":"en"}
+[2025-09-15 19:19:55] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&lang=fr GET: {"active_tab":"tab-systems","lang":"fr"}
+[2025-09-15 19:19:57] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&lang=en GET: {"active_tab":"tab-systems","lang":"en"}
+[2025-09-15 19:27:58] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&lang=en GET: {"active_tab":"tab-systems","lang":"en"}
+[2025-09-15 19:28:03] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&lang=en GET: {"active_tab":"tab-systems","lang":"en"}
+[2025-09-15 19:28:17] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&lang=fr GET: {"active_tab":"tab-systems","lang":"fr"}
+[2025-09-15 19:28:19] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&lang=en GET: {"active_tab":"tab-systems","lang":"en"}
+[2025-09-15 19:43:51] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&lang=en GET: {"active_tab":"tab-systems","lang":"en"}
+[2025-09-15 19:44:52] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&lang=en GET: {"active_tab":"tab-systems","lang":"en"}
+[2025-09-15 19:45:09] Request: GET /data/rgsx_sources_manager.php
+[2025-09-15 19:45:12] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=en GET: {"active_tab":"tab-scrape","lang":"en"}
+[2025-09-15 19:53:47] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=en GET: {"active_tab":"tab-scrape","lang":"en"}
+[2025-09-15 19:57:19] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=en GET: {"active_tab":"tab-scrape","lang":"en"}
+[2025-09-15 20:00:20] Request: GET /data/rgsx_sources_manager.php
+[2025-09-15 20:01:44] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=en GET: {"active_tab":"tab-scrape","lang":"en"}
+[2025-09-15 20:03:26] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=en GET: {"active_tab":"tab-scrape","lang":"en"}
+[2025-09-15 20:15:27] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=fr GET: {"active_tab":"tab-scrape","lang":"fr"}
+[2025-09-15 20:30:13] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=fr GET: {"active_tab":"tab-scrape","lang":"fr"} POST action: import_data_zip
+[2025-09-15 20:30:39] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-games&lang=en GET: {"active_tab":"tab-games","lang":"en"}
+[2025-09-15 20:30:59] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=-%20BIOS%20by%20TMCTV%20-.json GET: {"render_games_table":"1","file":"- BIOS by TMCTV -.json"}
+[2025-09-15 20:31:33] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-games&lang=en GET: {"active_tab":"tab-games","lang":"en"}
+[2025-09-15 20:34:28] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=en GET: {"active_tab":"tab-scrape","lang":"en"} POST action: scrape
+[2025-09-15 20:35:04] Request: GET /data/rgsx_sources_manager.php?preview_image=Commodore%20Amiga%20CD32.png GET: {"preview_image":"Commodore Amiga CD32.png"}
+[2025-09-15 20:35:07] Request: GET /data/rgsx_sources_manager.php?preview_image=ColecoVision.png GET: {"preview_image":"ColecoVision.png"}
+[2025-09-16 19:09:40] Request: GET /data/rgsx_sources_manager.php
+[2025-09-16 19:10:37] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"} POST action: import_data_zip
+[2025-09-16 19:10:46] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-games GET: {"active_tab":"tab-games"} POST action: games_delete_file
+[2025-09-16 19:11:34] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"} POST action: scrape
+[2025-09-16 19:14:46] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=en GET: {"active_tab":"tab-scrape","lang":"en"}
+[2025-09-16 19:14:52] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=fr GET: {"active_tab":"tab-scrape","lang":"fr"}
+[2025-09-16 19:15:56] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=fr GET: {"active_tab":"tab-scrape","lang":"fr"}
+[2025-09-16 19:16:22] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=fr GET: {"active_tab":"tab-scrape","lang":"fr"} POST action: attach_all_scrapes_to_platform
+[2025-09-16 19:16:32] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=PlayStation%203.json GET: {"render_games_table":"1","file":"PlayStation 3.json"}
+[2025-09-16 19:16:56] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-16 19:17:18] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=20 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"20"}
+[2025-09-16 19:19:49] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=20 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"20"}
+[2025-09-16 19:19:55] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-16 19:20:15] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"} POST action: systems_delete
+[2025-09-16 19:34:12] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-16 19:34:22] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"} POST action: systems_delete
+[2025-09-16 19:34:35] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-games&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-games","systems_page":"1","systems_per_page":"100"} POST action: games_delete_file
+[2025-09-16 19:36:42] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-scrape","systems_page":"1","systems_per_page":"100"} POST action: attach_all_scrapes_to_platform
+[2025-09-16 19:37:10] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-scrape","systems_page":"1","systems_per_page":"100"}
+[2025-09-16 19:37:15] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-games&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-games","systems_page":"1","systems_per_page":"100"}
+[2025-09-16 19:37:18] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-16 19:37:19] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-16 19:37:20] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=20 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"20"}
+[2025-09-16 19:37:21] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-16 19:37:22] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&lang=fr GET: {"active_tab":"tab-systems","lang":"fr"}
+[2025-09-16 19:37:23] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=fr GET: {"active_tab":"tab-scrape","lang":"fr"}
+[2025-09-16 19:37:25] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape&lang=en GET: {"active_tab":"tab-scrape","lang":"en"}
+[2025-09-16 19:37:28] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"}
+[2025-09-16 19:37:47] Request: GET /data/rgsx_sources_manager.php
+[2025-09-16 19:37:50] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"} POST action: import_data_zip
+[2025-09-16 19:38:25] Request: GET /data/rgsx_sources_manager.php
+[2025-09-16 19:38:40] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"} POST action: import_data_zip
+[2025-09-16 19:38:46] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"} POST action: scrape
+[2025-09-16 19:39:43] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"} POST action: attach_all_scrapes_to_platform
+[2025-09-16 19:40:27] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-16 19:44:16] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"} POST action: systems_delete
+[2025-09-16 19:44:22] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-games&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-games","systems_page":"1","systems_per_page":"100"} POST action: games_delete_file
+[2025-09-16 19:44:32] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"}
+[2025-09-16 19:44:36] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"} POST action: import_data_zip
+[2025-09-16 19:44:41] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"} POST action: scrape
+[2025-09-16 19:45:13] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-scrape GET: {"active_tab":"tab-scrape"} POST action: attach_all_scrapes_to_platform
+[2025-09-16 19:45:19] Request: GET /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"}
+[2025-09-16 19:45:29] Request: GET /data/rgsx_sources_manager.php?render_games_table=1&file=PlayStation%203.json GET: {"render_games_table":"1","file":"PlayStation 3.json"}
+[2025-09-16 19:47:22] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-systems&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-systems","systems_page":"1","systems_per_page":"100"} POST action: systems_update
+[2025-09-16 19:47:51] Request: POST /data/rgsx_sources_manager.php?active_tab=tab-package&systems_page=1&systems_per_page=100 GET: {"active_tab":"tab-package","systems_page":"1","systems_per_page":"100"} POST action: build_zip
+[2025-09-16 20:20:36] Request: GET /data/rgsx_sources_manager.php
+[2025-09-16 20:25:47] Request: GET /data/rgsx_sources_manager.php

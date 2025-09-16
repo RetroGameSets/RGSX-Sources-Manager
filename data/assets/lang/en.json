@@ -1,0 +1,100 @@
+{
+  "desc.main": "One page to: scrape games, edit systems_list.json, edit per-platform game lists and build a ZIP (systems_list.json, images/, games/).",
+  "tab.scrape": "Scrape",
+  "tab.systems": "Platforms (system_list.json)",
+  "tab.games": "Games (games/PlatformName.json)",
+  "tab.package": "ZIP Package",
+
+  "label.platform_name": "platform_name",
+  "label.folder": "folder",
+  "label.platform_image": "platform_image",
+  "label.platform_image_replace": "platform_image (replace)",
+  "label.file_platform": "Platform file",
+  "label.game_name": "Name/Archive",
+  "label.url": "URL",
+  "label.size": "Size",
+  "label.per_page": "Per page",
+  "label.extensions_detected": "Detected extensions:",
+
+  "btn.add": "Add",
+  "btn.add_line": "Add a row",
+  "btn.clear_platforms": "Clear platform list",
+  "btn.clear_games": "Clear all games",
+  "btn.modify": "Edit",
+  "btn.delete": "Delete",
+  "btn.save": "Save",
+  "btn.cancel": "Cancel",
+  "btn.view": "View",
+  "btn.build_zip": "Create ZIP (games.zip)",
+  "btn.download_systems": "Download systems_list.json only",
+  "btn.scrape": "Scrape",
+  "btn.use_official_base": "Use official RGSX base",
+  "btn.load": "Load",
+  "btn.scrape_go": "Scrape",
+  "btn.attach_platform": "Attach to platform",
+
+  "confirm.clear_platforms": "Clear all platforms?",
+  "confirm.clear_games": "Clear all games from every platform?",
+  "confirm.delete_entry": "Delete this entry?",
+  "confirm.delete_platform": "Delete this platform from the list?",
+  "confirm.delete_row": "Delete this row?",
+
+  "pagination.prev": "« Prev",
+  "pagination.next": "Next »",
+  "pagination.page": "Page",
+
+  "msg.systems.new": "New systems_list.json initialized (empty).",
+  "msg.systems.file_loaded": "File loaded.",
+  "msg.systems.added": "Platform added.",
+  "msg.systems.updated": "Platform updated.",
+  "msg.systems.deleted": "Deleted.",
+  "msg.games.attached": "Games attached to %s",
+  "msg.games.loaded_platforms": "Platform(s) loaded: %d",
+  "msg.games.row_added": "Row added.",
+  "msg.games.row_updated": "Row updated.",
+  "msg.games.row_deleted": "Row deleted.",
+  "msg.games.platform_deleted": "Platform removed: %s",
+  "msg.games.all_cleared": "All game lists have been cleared.",
+
+  "err.missing_params": "Missing parameters.",
+  "err.json_invalid": "Invalid JSON.",
+  "err.upload_failed": "Upload failed.",
+  "err.fields_required": "platform_name and folder required.",
+  "err.index_invalid": "Invalid index.",
+  "err.select_valid_platform_file": "Select a valid platform file.",
+  "err.cannot_update_row": "Unable to update row.",
+  "err.file_not_selected": "No file selected.",
+  "err.platform_file_missing": "Platform file not found.",
+  "err.too_many_files": "You selected %d files. Maximum allowed: %d. To load more than 20 use a ZIP.",
+  "err.json_invalid_or_not_array": "Invalid or non-array JSON.",
+  "err.temp_file_missing": "Temp file missing or unreadable.",
+  "err.select_platform": "Choose a platform",
+
+  "warn.maybe_truncated": "Warning: selection may have been truncated by PHP max_file_uploads=%d. For many files, use a ZIP.",
+
+  "table.systems.summary": "Systems %d-%d of %d",
+  "table.games.lines": "%d lines",
+
+  "misc.no_image": "—",
+  "misc.loading": "Loading…",
+  "misc.attached_system_added": ", system entry added: %s"
+  ,"heading.current_state": "Current state"
+  ,"stats.systems": "Systems: %d entr(y/ies)"
+  ,"stats.platforms_loaded": "Platforms loaded: %d file(s)"
+  ,"stats.images_in_zip": "Images: %d file(s) in ZIP"
+  ,"placeholder.platform_name": "Platform name"
+  ,"scrape.import_label": "Import DATA ZIP (file or URL)"
+  ,"scrape.expected_content": "Expected content: systems_list.json, games/*.json, images/*"
+  ,"scrape.urls_placeholder": "Paste URLs (1fichier / myrient / archive.org)"
+  ,"scrape.supported": "Supported: https://archive.org/download/*, https://1fichier.com/?*, https://myrient.erista.me/*."
+  ,"scrape.password_label": "Password (1fichier - optional)"
+  ,"scrape.password_placeholder": "Leave empty if not needed"
+  ,"scrape.password_help": "If the 1fichier URL is a protected folder the password will unlock the page ([PW] in debug)."
+  ,"btn.attach_all": "Add all »"
+  ,"scrape.results": "Results"
+  ,"scrape.source": "Source"
+  ,"scrape.files_count": "%d file(s)"
+  ,"scrape.urls_label": "URLs or HTML"
+  ,"placeholder.select_platform": "Platform..."
+  ,"placeholder.select_folder": "Folder..."
+}
