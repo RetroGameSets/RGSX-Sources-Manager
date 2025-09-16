@@ -2,6 +2,10 @@
 
 [English version](./README.en.md)
 
+Téléchargements rapides:
+- Windows (portable): https://github.com/RetroGameSets/rgsx-sources-manager/releases/latest/download/RGSX_Sources_Manager_Windows.zip
+- PHP (hébergé, minimal): https://github.com/RetroGameSets/rgsx-sources-manager/releases/latest/download/RGSX_Sources_Manager_PHP.zip
+
 RGSX Sources Manager est un outil tout-en-un pour:
 - Scraper des listes de jeux depuis des pages/URLs (archive.org, 1fichier, myrient…)
 - Éditer le fichier `systems_list.json` et gérer vos plateformes

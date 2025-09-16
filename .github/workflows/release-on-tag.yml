@@ -34,6 +34,10 @@ jobs:
           # cp -f data/assets/batocera_systems.json dist/min/assets/
           (cd dist/min && zip -r "../RGSX_Sources_Manager_PHP_${VERSION}.zip" .)
 
+          echo "Creating stable-named copies for latest download links…"
+          cp -f "dist/RGSX_Sources_Manager_Windows_${VERSION}.zip" "dist/RGSX_Sources_Manager_Windows.zip"
+          cp -f "dist/RGSX_Sources_Manager_PHP_${VERSION}.zip" "dist/RGSX_Sources_Manager_PHP.zip"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
