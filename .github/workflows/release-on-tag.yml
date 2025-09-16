@@ -15,11 +15,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Build ZIPs (Windows full and Hosted PHP minimal)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          echo "Building full Windows package ZIP…"
+          zip -r "dist/RGSX_Sources_Manager_Windows_${VERSION}.zip" . \
+            -x "**/.git/**" "**/.github/**" "**/.gitignore"
+
+          echo "Building hosted PHP minimal ZIP…"
+          mkdir -p dist/min/data/assets/lang
+          cp -f data/rgsx_sources_manager.php dist/min/data/
+          cp -rf data/assets/lang/* dist/min/data/assets/lang/
+          cp -f data/assets/favicon_rgsx.ico dist/min/data/assets/ || true
+          # Note: If you also want Batocera lists, uncomment the next line
+          # cp -f data/assets/batocera_systems.json dist/min/data/assets/
+          (cd dist/min && zip -r "../RGSX_Sources_Manager_PHP_${VERSION}.zip" .)
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
+          files: |
+            dist/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
