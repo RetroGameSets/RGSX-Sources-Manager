@@ -27,9 +27,9 @@ jobs:
 
           echo "Building hosted PHP minimal ZIP…"
           mkdir -p dist/min/data/assets/lang
-          cp -f data/rgsx_sources_manager.php dist/min/data/
-          cp -rf data/assets/lang/* dist/min/data/assets/lang/
-          cp -f data/assets/favicon_rgsx.ico dist/min/data/assets/ || true
+          cp -f data/rgsx_sources_manager.php dist/min
+          cp -rf data/assets/lang/* dist/min/assets/lang/
+          cp -f data/assets/favicon_rgsx.ico dist/min/assets/ || true
           # Note: If you also want Batocera lists, uncomment the next line
           # cp -f data/assets/batocera_systems.json dist/min/data/assets/
           (cd dist/min && zip -r "../RGSX_Sources_Manager_PHP_${VERSION}.zip" .)
