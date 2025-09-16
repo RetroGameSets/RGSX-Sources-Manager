@@ -23,7 +23,7 @@ jobs:
           mkdir -p dist
           echo "Building full Windows package ZIP…"
           zip -r "dist/RGSX_Sources_Manager_Windows_${VERSION}.zip" . \
-            -x "**/.git/**" "**/.github/**" "**/.gitignore"
+            -x ".git/*" ".git/**" ".github/*" ".github/**" ".gitignore"
 
           echo "Building hosted PHP minimal ZIP…"
           mkdir -p dist/min/data/assets/lang
