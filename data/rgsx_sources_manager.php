@@ -993,7 +993,7 @@ $action = $_POST['action'] ?? '';
 $activeTab = $_POST['active_tab'] ?? $_GET['active_tab'] ?? $_SESSION['active_tab'] ?? 'tab-scrape';
 $message = '';
 $error = '';
-$allowedExtensions = ['xci','zip','rar','7z','tar','gz','chd','txt','wsquashfs','iso','torrent'];
+$allowedExtensions = ['xci','nsp','zip','rar','7z','tar','gz','chd','wsquashfs','iso','wbfs','nds','dsi','cia','3ds','cia','gba','gbc','gb','nes','sfc','smc','gen','md','sms','gg','pce','sgx','a26','a78','bin','cue','img','pbp','rom','n64'];
 
 try {
   switch ($action) {
