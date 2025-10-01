@@ -1782,6 +1782,18 @@ foreach ($images as $im) { if (!empty($im['name'])) { $imagesByName[$im['name']]
 <script>
 // Remplir les listes déroulantes Batocera dans les résultats de scrap (noms dédiés pour éviter collisions globales)
 let rgsxScrapeBatoceraSystems = [];
+// Plateformes de la session (créées manuellement)
+const sessionPlatforms = <?php echo json_encode(
+  isset($_SESSION['systems_list']) && is_array($_SESSION['systems_list']) 
+    ? array_map(function($system) {
+        return [
+          'name' => $system['platform_name'] ?? '',
+          'folder' => $system['folder'] ?? ''
+        ];
+      }, $_SESSION['systems_list'])
+    : []
+); ?>;
+
 function fetchScrapeBatoceraSystems(cb) {
   if (rgsxScrapeBatoceraSystems.length) { cb && cb(); return; }
   fetch('assets/batocera_systems.json')
@@ -1792,10 +1804,27 @@ function fetchScrapeBatoceraSystems(cb) {
         try { data = data.flat(); } catch(_) { data = data[0]; }
       }
       // Filtrer les entrées valides uniquement
-      rgsxScrapeBatoceraSystems = (Array.isArray(data) ? data : []).filter(d => d && typeof d === 'object' && 'name' in d && 'folder' in d);
+      const batoceraData = (Array.isArray(data) ? data : []).filter(d => d && typeof d === 'object' && 'name' in d && 'folder' in d);
+      
+      // Combiner avec les plateformes de la session
+      rgsxScrapeBatoceraSystems = [...batoceraData, ...sessionPlatforms].filter(d => d.name && d.folder);
+      
+      // Supprimer les doublons (priorité aux plateformes de la session)
+      const seen = new Set();
+      rgsxScrapeBatoceraSystems = rgsxScrapeBatoceraSystems.reverse().filter(d => {
+        const key = d.name.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).reverse();
+      
       cb && cb();
     })
-    .catch(_ => { rgsxScrapeBatoceraSystems = []; cb && cb(); });
+    .catch(_ => { 
+      // Si le fichier JSON échoue, utiliser au moins les plateformes de la session
+      rgsxScrapeBatoceraSystems = sessionPlatforms.filter(d => d.name && d.folder);
+      cb && cb(); 
+    });
 }
 function fillScrapeBatoceraDropdowns(form) {
   const nameSel = form.querySelector('.batocera-name-select');
