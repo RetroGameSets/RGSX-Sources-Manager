@@ -617,7 +617,10 @@ if (isset($_GET['render_games_table'])) {
   $rows = $_SESSION['platform_games'][$file] ?? null;
   if ($rows === null || !is_array($rows)) {
     http_response_code(404);
-    echo '<div class="text-muted">Aucune donnée pour ' . htmlspecialchars($file, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8') . '</div>';
+    // Debug temporaire
+    $availableFiles = array_keys($_SESSION['platform_games'] ?? []);
+    echo '<div class="text-muted">Aucune donnée pour ' . htmlspecialchars($file, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8') . '<br>';
+    echo 'Fichiers disponibles: ' . implode(', ', $availableFiles) . '</div>';
     exit;
   }
   $total = count($rows);
@@ -684,7 +687,7 @@ if (isset($_GET['render_games_table'])) {
   echo '<button type="button" class="btn btn-sm btn-outline-primary" onclick="toggleGameEditRow(' . $idx . ')">' . t('btn.modify','Modifier') . '</button>';
       echo '<form method="post" class="m-0">';
       echo '<input type="hidden" name="action" value="games_delete_row">';
-      echo '<input type="hidden" name="active_tab" value="tab-games">';
+      echo '<input type="hidden" name="active_tab" value="tab-systems">';
       echo '<input type="hidden" name="games_file" value="' . htmlspecialchars($file, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8') . '">';
       echo '<input type="hidden" name="row_index" value="' . $idx . '">';
   echo '<button class="btn btn-sm btn-outline-danger" onclick="return confirm(\'' . addslashes(t('confirm.delete_row','Supprimer cette ligne ?')) . '\');">' . t('btn.delete','Supprimer') . '</button>';
@@ -697,11 +700,11 @@ if (isset($_GET['render_games_table'])) {
     echo '<td colspan="5">';
     echo '<form method="post" class="row g-2 align-items-end">';
     echo '<input type="hidden" name="action" value="games_update_row">';
-    echo '<input type="hidden" name="active_tab" value="tab-games">';
+    echo '<input type="hidden" name="active_tab" value="tab-systems">';
     echo '<input type="hidden" name="games_file" value="' . htmlspecialchars($file, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8') . '">';
     echo '<input type="hidden" name="row_index" value="' . $idx . '">';
   echo '<div class="col-md-4"><label class="form-label">' . t('label.game_name','Nom/Archive') . '</label><input class="form-control form-control-sm" name="game_name" value="' . $name . '"></div>';
-  echo '<div class="col-md-6"><label class="form-label">' . t('label.url','URL') . '</label><input class="form-control form-control-sm" name="game_url" value="' . $url . '"></div>';
+  echo '<div class="col-md-6"><label class="form-label">' . t('label.url','URL') . '</label><input class="form-control form-control-sm" name="game_url" value="' . $urlFullEsc . '"></div>';
   echo '<div class="col-md-2"><label class="form-label">' . t('label.size','Taille') . '</label><input class="form-control form-control-sm" name="game_size" value="' . $size . '"></div>';
   echo '<div class="col-12 text-end"><button class="btn btn-sm btn-primary">' . t('btn.save','Enregistrer') . '</button> <button type="button" class="btn btn-sm btn-secondary" onclick="toggleGameEditRow(' . $idx . ')">' . t('btn.cancel','Annuler') . '</button></div>';
     echo '</form>';
@@ -1362,6 +1365,66 @@ try {
         $message = t('msg.systems.updated');
       } else { $error = t('err.index_invalid'); }
       break;
+    
+    case 'systems_update_with_rename':
+      $idx = (int)($_POST['index'] ?? -1);
+      if ($idx >= 0 && isset($_SESSION['systems_list'][$idx])) {
+        $pn = trim($_POST['platform_name'] ?? '');
+        $fd = trim($_POST['folder'] ?? '');
+        $oldPlatformName = trim($_POST['old_platform_name'] ?? '');
+        
+        // Gestion du changement de nom de fichier
+        if ($oldPlatformName !== '' && $pn !== '' && $oldPlatformName !== $pn) {
+          $oldFile = $oldPlatformName . '.json';
+          $newFile = $pn . '.json';
+          
+          // Si le fichier existe dans les jeux, le renommer
+          if (isset($_SESSION['platform_games'][$oldFile])) {
+            $_SESSION['platform_games'][$newFile] = $_SESSION['platform_games'][$oldFile];
+            unset($_SESSION['platform_games'][$oldFile]);
+          }
+        }
+        
+        // Keep existing image name by default when no new file is chosen
+        $existingPi = (string)($_SESSION['systems_list'][$idx]['platform_image'] ?? '');
+        $pi = $existingPi;
+        // Optional image upload replacement
+        if (isset($_FILES['platform_image_file']) && $_FILES['platform_image_file']['error'] === UPLOAD_ERR_OK) {
+          $upName = $_FILES['platform_image_file']['name'] ?? '';
+          $upTmp  = $_FILES['platform_image_file']['tmp_name'] ?? '';
+          $upType = $_FILES['platform_image_file']['type'] ?? '';
+          if ($upTmp && $upName) {
+            $stored = persist_upload_to_session_dir($upTmp, $upName);
+            if ($stored) {
+              $_SESSION['images'][] = ['name' => basename($stored), 'tmp' => $stored, 'type' => $upType];
+              $pi = basename($stored);
+            }
+          }
+        }
+        if ($pi === '' && $pn !== '') { $pi = $pn . '.png'; }
+        $_SESSION['systems_list'][$idx] = [
+          'platform_name' => $pn,
+          'folder' => $fd,
+          'platform_image' => $pi,
+        ];
+        $message = t('msg.systems.updated') . ($oldPlatformName !== $pn && $oldPlatformName !== '' ? ' (Fichier renommé)' : '');
+      } else { $error = t('err.index_invalid'); }
+      break;
+      
+    case 'platform_delete_complete':
+      $idx = (int)($_POST['platform_index'] ?? -1);
+      $platformFile = trim($_POST['platform_file'] ?? '');
+      if ($idx >= 0 && isset($_SESSION['systems_list'][$idx]) && $platformFile !== '') {
+        // Supprimer de la liste des systèmes
+        array_splice($_SESSION['systems_list'], $idx, 1);
+        // Supprimer le fichier de jeux associé
+        if (isset($_SESSION['platform_games'][$platformFile])) {
+          unset($_SESSION['platform_games'][$platformFile]);
+        }
+        $message = 'Plateforme et ses jeux supprimés avec succès.';
+      } else { $error = t('err.index_invalid'); }
+      break;
+      
     case 'systems_delete':
       $idx = (int)($_POST['index'] ?? -1);
   if ($idx >= 0 && isset($_SESSION['systems_list'][$idx])) { array_splice($_SESSION['systems_list'],$idx,1); $message=t('msg.systems.deleted'); }
@@ -1591,19 +1654,41 @@ $systemsPage = (int)($_POST['systems_page'] ?? $_GET['systems_page'] ?? $_SESSIO
 $allowedPerPage = [10,20,25,50,100];
 $systemsPerPage = (int)($_POST['systems_per_page'] ?? $_GET['systems_per_page'] ?? $_SESSION['systems_per_page'] ?? 20);
 if (!in_array($systemsPerPage, $allowedPerPage, true)) { $systemsPerPage = 20; }
+// Gestion du tri
+$allowedSortOrders = ['original', 'alphabetical'];
+$systemsSortOrder = ($_POST['systems_sort_order'] ?? $_GET['systems_sort_order'] ?? $_SESSION['systems_sort_order'] ?? 'original');
+if (!in_array($systemsSortOrder, $allowedSortOrders, true)) { $systemsSortOrder = 'original'; }
 $_SESSION['systems_per_page'] = $systemsPerPage;
 $_SESSION['systems_page'] = $systemsPage;
+$_SESSION['systems_sort_order'] = $systemsSortOrder;
 
 // -------------- View -------------------------------
 function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8'); }
 $scraped = $_SESSION['last_scrape'] ?? [];
 $systems = $_SESSION['systems_list'];
+
+// Apply sorting
+if ($systemsSortOrder === 'alphabetical') {
+  $systems = $systems; // Make a copy for sorting
+  usort($systems, function($a, $b) {
+    $nameA = strtolower($a['platform_name'] ?? '');
+    $nameB = strtolower($b['platform_name'] ?? '');
+    return strcmp($nameA, $nameB);
+  });
+  // Update the session with sorted systems to maintain order in JSON export
+  $_SESSION['systems_list'] = $systems;
+}
+
 $systemsTotal = count($systems);
 $systemsPages = max(1, (int)ceil($systemsTotal / $systemsPerPage));
 $systemsPage = max(1, min($systemsPage, $systemsPages));
 $systemsOffset = ($systemsPage - 1) * $systemsPerPage;
 $systemsPaginated = array_slice($systems, $systemsOffset, $systemsPerPage);
 $gamesMap = $_SESSION['platform_games'];
+// Debug temporaire
+if (empty($gamesMap)) {
+  $message = "No loaded sources or games.";
+}
 $images = $_SESSION['images'];
 $imagesByName = [];
 foreach ($images as $im) { if (!empty($im['name'])) { $imagesByName[$im['name']] = true; } }
@@ -1688,7 +1773,7 @@ foreach ($images as $im) { if (!empty($im['name'])) { $imagesByName[$im['name']]
     </div>
   </div>
   <h1 class="mb-3">RGSX Sources Manager</h1>
-  <p class="small-muted"><?php echo t('desc.main', 'Une seule page pour : scraper des jeux, éditer systems_list.json, éditer les plateformes et générer un ZIP (systems_list.json, images/, games/).'); ?></p>
+  <p class="small-muted"><?php echo t('desc.main', 'Une seule page pour : scraper des jeux, éditer les plateformes et générer un ZIP (systems_list.json, images/, games/).'); ?></p>
 
   <div class="d-flex justify-content-end mb-2">
     <form method="get" class="d-inline">
@@ -1723,9 +1808,8 @@ foreach ($images as $im) { if (!empty($im['name'])) { $imagesByName[$im['name']]
 
   <ul class="nav nav-tabs" id="tabs" role="tablist">
     <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-scrape'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-scrape" type="button">1) <?php echo t('tab.scrape','Scraper'); ?></button></li>
-    <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-systems'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-systems" type="button">2) <?php echo t('tab.systems','Plateformes (system_list.json)'); ?></button></li>
-    <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-games'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-games" type="button">3) <?php echo t('tab.games','Jeux (games/NomPlateform.json)'); ?></button></li>
-    <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-package'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-package" type="button">4) <?php echo t('tab.package','Package ZIP'); ?></button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link <?php echo ($activeTab==='tab-systems' || $activeTab==='tab-games')?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-systems" type="button">2) <?php echo t('tab.systems','Plateformes & Jeux'); ?></button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-package'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-package" type="button">3) <?php echo t('tab.package','Package ZIP'); ?></button></li>
   </ul>
 
   <div class="tab-content border border-top-0 p-3">
@@ -1917,7 +2001,7 @@ document.addEventListener('DOMContentLoaded', function() {
           allExts = Array.from(allExts).sort();
           if (allExts.length === 0) return;
           // Build checkboxes
-          let html = '<label class="form-label">Extensions détectées :</label><br>';
+          let html = '<label class="form-label"><?php echo t('label.extensions_detected'); ?></label><br>';
           for (const ext of allExts) {
             html += `<div class="form-check form-check-inline">
               <input class="form-check-input scrape-ext-filter" type="checkbox" value="${ext}" id="scrape_ext_${ext}" checked>
@@ -1943,8 +2027,8 @@ document.addEventListener('DOMContentLoaded', function() {
       <?php endif; ?>
     </div>
 
-    <!-- Systems -->
-    <div class="tab-pane fade <?php echo $activeTab==='tab-systems'?'show active':''; ?>" id="tab-systems">
+    <!-- Systems & Games -->
+    <div class="tab-pane fade <?php echo ($activeTab==='tab-systems' || $activeTab==='tab-games')?'show active':''; ?>" id="tab-systems">
       <div class="d-flex gap-2 mb-2">
         <form method="post" class="d-inline">
           <input type="hidden" name="action" value="systems_new">
@@ -1956,12 +2040,23 @@ document.addEventListener('DOMContentLoaded', function() {
           <input type="hidden" name="active_tab" value="tab-systems">
           <input type="file" class="form-control" name="systems_file" accept=".json,application/json" required onchange="showOverlayAndSubmit(this.form)">
         </form>
+        <form method="post" enctype="multipart/form-data" class="d-inline">
+          <input type="hidden" name="action" value="games_upload">
+          <input type="hidden" name="active_tab" value="tab-systems">
+          <input type="file" class="form-control" name="platform_json[]" accept=".json,application/json,.zip,application/zip,application/x-zip-compressed" multiple onchange="handleGamesFilesChange(this)">
+        </form>
+        <form method="post" class="d-inline">
+          <input type="hidden" name="action" value="games_clear_all">
+          <input type="hidden" name="active_tab" value="tab-systems">
+          <button class="btn btn-outline-warning btn-sm" type="submit" onclick="return confirm('<?php echo t('confirm.clear_games'); ?>');"><?php echo t('btn.clear_games'); ?></button>
+        </form>
       </div>
       <form method="post" class="row g-2 align-items-end mb-3" id="systemsAddForm" enctype="multipart/form-data">
         <input type="hidden" name="action" value="systems_add">
         <input type="hidden" name="active_tab" value="tab-systems">
         <input type="hidden" name="systems_page" value="<?php echo $systemsPage; ?>">
         <input type="hidden" name="systems_per_page" value="<?php echo $systemsPerPage; ?>">
+        <input type="hidden" name="systems_sort_order" value="<?php echo $systemsSortOrder; ?>">
         <div class="col-md-3">
           <label class="form-label"><?php echo t('label.platform_name'); ?></label>
           <div class="input-group">
@@ -1993,6 +2088,11 @@ document.addEventListener('DOMContentLoaded', function() {
         <form method="get" class="d-flex align-items-center gap-2 mb-0">
           <input type="hidden" name="active_tab" value="tab-systems">
           <input type="hidden" name="systems_page" value="1">
+          <label for="systems_sort_order" class="form-label mb-0 small"><?php echo t('label.sort_order'); ?></label>
+          <select class="form-select form-select-sm" style="width:auto" name="systems_sort_order" id="systems_sort_order" onchange="this.form.submit()">
+            <option value="original" <?php echo $systemsSortOrder === 'original' ? 'selected' : ''; ?>><?php echo t('sort.original'); ?></option>
+            <option value="alphabetical" <?php echo $systemsSortOrder === 'alphabetical' ? 'selected' : ''; ?>><?php echo t('sort.alphabetical'); ?></option>
+          </select>
           <label for="systems_per_page" class="form-label mb-0 small"><?php echo t('label.per_page'); ?></label>
           <select class="form-select form-select-sm" style="width:auto" name="systems_per_page" id="systems_per_page" onchange="this.form.submit()">
             <?php foreach ([10,20,25,50,100] as $opt): ?>
@@ -2001,130 +2101,167 @@ document.addEventListener('DOMContentLoaded', function() {
           </select>
         </form>
         <div class="btn-group" role="group">
-          <a href="?active_tab=tab-systems&systems_per_page=<?php echo $systemsPerPage; ?>&systems_page=<?php echo max(1, $systemsPage - 1); ?>" class="btn btn-sm btn-outline-secondary <?php echo $systemsPage <= 1 ? 'disabled' : ''; ?>"><?php echo t('pagination.prev'); ?></a>
+          <a href="?active_tab=tab-systems&systems_per_page=<?php echo $systemsPerPage; ?>&systems_sort_order=<?php echo $systemsSortOrder; ?>&systems_page=<?php echo max(1, $systemsPage - 1); ?>" class="btn btn-sm btn-outline-secondary <?php echo $systemsPage <= 1 ? 'disabled' : ''; ?>"><?php echo t('pagination.prev'); ?></a>
           <span class="btn btn-sm btn-secondary disabled"><?php echo t('pagination.page','Page'); ?> <?php echo $systemsPage; ?>/<?php echo $systemsPages; ?></span>
-          <a href="?active_tab=tab-systems&systems_per_page=<?php echo $systemsPerPage; ?>&systems_page=<?php echo min($systemsPages, $systemsPage + 1); ?>" class="btn btn-sm btn-outline-secondary <?php echo $systemsPage >= $systemsPages ? 'disabled' : ''; ?>"><?php echo t('pagination.next'); ?></a>
+          <a href="?active_tab=tab-systems&systems_per_page=<?php echo $systemsPerPage; ?>&systems_sort_order=<?php echo $systemsSortOrder; ?>&systems_page=<?php echo min($systemsPages, $systemsPage + 1); ?>" class="btn btn-sm btn-outline-secondary <?php echo $systemsPage >= $systemsPages ? 'disabled' : ''; ?>"><?php echo t('pagination.next'); ?></a>
         </div>
       </div>
+      <!-- Plateformes avec jeux intégrés -->
       <div class="table-responsive">
-        <table class="table table-sm table-striped align-middle">
-          <thead><tr><th>#</th><th>platform_name</th><th>folder</th><th>platform_image</th><th>image</th><th></th></tr></thead>
+        <table class="table table-bordered table-striped table-sm">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th><?php echo t('label.platform_name'); ?></th>
+              <th><?php echo t('label.folder'); ?></th>
+              <th><?php echo t('label.platform_image'); ?></th>
+              <th><?php echo t('label.games'); ?></th>
+              <th><?php echo t('label.actions'); ?></th>
+            </tr>
+          </thead>
           <tbody>
-            <?php foreach ($systemsPaginated as $i => $row): 
-              $realIndex = $systemsOffset + $i; ?>
-              <tr>
-                <td><?php echo $realIndex + 1; ?></td>
-                <td><?php echo h($row['platform_name'] ?? ''); ?></td>
-                <td><?php echo h($row['folder'] ?? ''); ?></td>
-                <td><?php echo h($row['platform_image'] ?? ''); ?></td>
-                <td>
-                  <?php $imgName = (string)($row['platform_image'] ?? '');
-                        if ($imgName !== '' && isset($imagesByName[$imgName])): ?>
-                    <button type="button" class="btn btn-sm btn-outline-info" onclick="showImageModal('<?php echo addslashes($imgName); ?>')"><?php echo t('btn.view'); ?></button>
-                  <?php else: ?>
-                    <span class="text-muted small">—</span>
-                  <?php endif; ?>
-                </td>
-                <td class="text-nowrap">
-                  <button type="button" class="btn btn-sm btn-outline-primary" onclick="toggleEditRow(<?php echo (int)$realIndex; ?>)"><?php echo t('btn.modify'); ?></button>
-                  <form method="post" class="d-inline" onsubmit="return confirm('<?php echo t('confirm.delete_entry'); ?>');">
-                    <input type="hidden" name="action" value="systems_delete">
-                    <input type="hidden" name="active_tab" value="tab-systems">
-                    <input type="hidden" name="systems_page" value="<?php echo $systemsPage; ?>">
-                    <input type="hidden" name="systems_per_page" value="<?php echo $systemsPerPage; ?>">
-                    <input type="hidden" name="index" value="<?php echo (int)$realIndex; ?>">
-                    <button class="btn btn-sm btn-outline-danger"><?php echo t('btn.delete'); ?></button>
-                  </form>
-                </td>
-              </tr>
-              <tr id="edit-row-<?php echo (int)$realIndex; ?>" class="d-none">
-                <td colspan="6">
-                  <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end">
-                    <input type="hidden" name="action" value="systems_update">
-                    <input type="hidden" name="active_tab" value="tab-systems">
-                    <input type="hidden" name="index" value="<?php echo (int)$i; ?>">
-                    <input type="hidden" name="systems_page" value="<?php echo $systemsPage; ?>">
-                    <input type="hidden" name="systems_per_page" value="<?php echo $systemsPerPage; ?>">
-                    <div class="col-md-3"><label class="form-label"><?php echo t('label.platform_name'); ?></label><input class="form-control form-control-sm" name="platform_name" value="<?php echo h($row['platform_name'] ?? ''); ?>" required></div>
-                    <div class="col-md-3"><label class="form-label"><?php echo t('label.folder'); ?></label><input class="form-control form-control-sm" name="folder" value="<?php echo h($row['folder'] ?? ''); ?>" required></div>
-                    <div class="col-md-4">
-                      <label class="form-label"><?php echo t('label.platform_image_replace'); ?></label>
-                      <input type="file" class="form-control form-control-sm" name="platform_image_file" id="platformImageFile-<?php echo (int)$i; ?>" accept="image/*">
-
-                      <div class="form-text">Laissez vide pour conserver l’image actuelle.</div>
+      <?php foreach ($systemsPaginated as $i => $row): 
+        $realIndex = $systemsOffset + $i;
+        $platformName = (string)($row['platform_name'] ?? '');
+        $platformFile = $platformName . '.json';
+        $games = isset($gamesMap[$platformFile]) ? $gamesMap[$platformFile] : [];
+        $gamesCount = count($games);
+        ?>
+            <tr>
+              <td><?php echo $realIndex + 1; ?></td>
+              <td><?php echo h($platformName); ?></td>
+              <td><?php echo h($row['folder'] ?? ''); ?></td>
+              <td>
+                <?php $imgName = (string)($row['platform_image'] ?? '');
+                      if ($imgName !== ''): ?>
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="small text-muted"><?php echo h($imgName); ?></span>
+                    <?php if (isset($imagesByName[$imgName])): ?>
+                      <button type="button" class="btn btn-sm btn-outline-info" onclick="showImageModal('<?php echo addslashes($imgName); ?>')" title="Voir image"><?php echo t('btn.view'); ?></button>
+                    <?php endif; ?>
+                  </div>
+                <?php else: ?>
+                  <span class="text-muted">-</span>
+                <?php endif; ?>
+              </td>
+              <td>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleGames(<?php echo $realIndex; ?>)" data-games-count="<?php echo $gamesCount; ?>">
+                  <?php echo $gamesCount; ?> jeux
+                </button>
+              </td>
+              <td class="text-nowrap">
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="toggleEditRow(<?php echo $realIndex; ?>)"><?php echo t('btn.modify'); ?></button>
+                <form method="post" class="d-inline" onsubmit="return confirm('Supprimer cette plateforme et tous ses jeux ?');">
+                  <input type="hidden" name="action" value="platform_delete_complete">
+                  <input type="hidden" name="active_tab" value="tab-systems">
+                  <input type="hidden" name="platform_index" value="<?php echo $realIndex; ?>">
+                  <input type="hidden" name="platform_file" value="<?php echo h($platformFile); ?>">
+                  <button class="btn btn-sm btn-outline-danger"><?php echo t('btn.delete'); ?></button>
+                </form>
+              </td>
+            </tr>
+            
+            <!-- Ligne d'édition cachée -->
+            <tr id="edit-row-<?php echo $realIndex; ?>" class="d-none">
+              <td colspan="6">
+                <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end">
+                  <input type="hidden" name="action" value="systems_update_with_rename">
+                  <input type="hidden" name="active_tab" value="tab-systems">
+                  <input type="hidden" name="index" value="<?php echo $realIndex; ?>">
+                  <input type="hidden" name="old_platform_name" value="<?php echo h($platformName); ?>">
+                  <input type="hidden" name="systems_page" value="<?php echo $systemsPage; ?>">
+                  <input type="hidden" name="systems_per_page" value="<?php echo $systemsPerPage; ?>">
+                  <input type="hidden" name="systems_sort_order" value="<?php echo $systemsSortOrder; ?>">
+                  <div class="col-md-3">
+                    <label class="form-label"><?php echo t('label.platform_name'); ?></label>
+                    <div class="input-group">
+                      <select class="form-select batocera-name-select" style="max-width:60%">
+                        <option value="">Select...</option>
+                      </select>
+                      <input class="form-control form-control-sm" name="platform_name" value="<?php echo h($platformName); ?>" required>
                     </div>
-                    <div class="col-md-2"><button class="btn btn-sm btn-primary w-100" type="submit"><?php echo t('btn.save'); ?></button></div>
-                  </form>
-                </td>
-              </tr>
-            <?php endforeach; ?>
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label"><?php echo t('label.folder'); ?></label>
+                    <div class="input-group">
+                      <select class="form-select batocera-folder-select" style="max-width:40%">
+                        <option value="">Select...</option>
+                      </select>
+                      <input class="form-control form-control-sm" name="folder" value="<?php echo h($row['folder'] ?? ''); ?>" required>
+                    </div>
+                  </div>
+                  <div class="col-md-4">
+                    <label class="form-label"><?php echo t('label.platform_image_replace'); ?></label>
+                    <input type="file" class="form-control form-control-sm" name="platform_image_file" accept="image/*">
+                    <div class="form-text">Laissez vide pour conserver: <?php echo h($row['platform_image'] ?? ''); ?></div>
+                  </div>
+                  <div class="col-md-2">
+                    <button class="btn btn-sm btn-primary w-100" type="submit"><?php echo t('btn.save'); ?></button>
+                  </div>
+                </form>
+              </td>
+            </tr>
+            
+            <!-- Ligne des jeux cachée -->
+            <tr id="games-row-<?php echo $realIndex; ?>" class="d-none">
+              <td colspan="6">
+                <div class="p-3 bg-light">
+                  <div class="mb-3">
+                    <strong><?php echo sprintf(t('label.games_of_platform'), h($platformName), $gamesCount); ?></strong>
+                    <!-- Bouton pour ajouter un jeu -->
+                    <button class="btn btn-sm btn-success float-end" onclick="toggleAddGame(<?php echo $realIndex; ?>)"><?php echo t('btn.add_game'); ?></button>
+                  </div>
+                  
+                  <!-- Formulaire d'ajout de jeu caché -->
+                  <div id="add-game-<?php echo $realIndex; ?>" class="card mb-3 d-none">
+                    <div class="card-body">
+                      <form method="post" class="row g-2 align-items-end">
+                        <input type="hidden" name="action" value="games_add_row">
+                        <input type="hidden" name="active_tab" value="tab-systems">
+                        <input type="hidden" name="games_file" value="<?php echo h($platformFile); ?>">
+                        <div class="col-md-4">
+                          <label class="form-label"><?php echo t('label.game_name'); ?></label>
+                          <input class="form-control form-control-sm" name="game_name" placeholder="Nom du fichier" required>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label"><?php echo t('label.url'); ?></label>
+                          <input class="form-control form-control-sm" name="game_url" placeholder="https://..." required>
+                        </div>
+                        <div class="col-md-2">
+                          <label class="form-label"><?php echo t('label.size'); ?></label>
+                          <input class="form-control form-control-sm" name="game_size" placeholder="467.4M">
+                        </div>
+                        <div class="col-12">
+                          <button class="btn btn-sm btn-success" type="submit"><?php echo t('btn.add_line'); ?></button>
+                          <button class="btn btn-sm btn-secondary" type="button" onclick="toggleAddGame(<?php echo $realIndex; ?>)">Annuler</button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                  
+                  <!-- Liste des jeux -->
+                  <div class="small text-muted" id="loading-games-<?php echo $realIndex; ?>" style="display:none;">Chargement des jeux...</div>
+                  <div id="games-body-<?php echo $realIndex; ?>"></div>
+                </div>
+              </td>
+            </tr>
+      <?php endforeach; ?>
           </tbody>
         </table>
       </div>
+      
+    </div>
+
 
       
     </div>
 
-    <!-- Games per Platform -->
-    <div class="tab-pane fade <?php echo $activeTab==='tab-games'?'show active':''; ?>" id="tab-games">
-      <div class="mb-2 d-flex gap-2 align-items-center">
-        <form method="post" enctype="multipart/form-data" class="flex-grow-1">
-          <input type="hidden" name="action" value="games_upload">
-          <input type="hidden" name="active_tab" value="tab-games">
-          <input type="file" class="form-control" name="platform_json[]" accept=".json,application/json,.zip,application/zip,application/x-zip-compressed" multiple required onchange="handleGamesFilesChange(this)">
-          <div class="form-text">Max 20 <?php echo t('label.game_name','fichiers'); ?>. ZIP &gt;20.</div>
-        </form>
-        <form method="post" class="d-inline">
-          <input type="hidden" name="action" value="games_clear_all">
-          <input type="hidden" name="active_tab" value="tab-games">
-          <button class="btn btn-outline-danger btn-sm" type="submit" onclick="return confirm('<?php echo t('confirm.clear_games'); ?>');"><?php echo t('btn.clear_games'); ?></button>
-        </form>
-      </div>
-      <?php if (!empty($gamesMap)): ?>
-        <div class="card p-3 mb-3">
-          <form method="post" class="row g-2 align-items-end">
-            <input type="hidden" name="action" value="games_add_row">
-            <div class="col-md-3">
-              <label class="form-label"><?php echo t('label.file_platform'); ?></label>
-              <select class="form-select" name="games_file" required>
-                <?php foreach ($gamesMap as $fname => $_): ?><option value="<?php echo h($fname); ?>"><?php echo h($fname); ?></option><?php endforeach; ?>
-              </select>
-            </div>
-            <div class="col-md-3"><label class="form-label"><?php echo t('label.game_name'); ?></label><input class="form-control" name="game_name" placeholder="Nom du fichier"></div>
-            <div class="col-md-4"><label class="form-label"><?php echo t('label.url'); ?></label><input class="form-control" name="game_url" placeholder="https://..."></div>
-            <div class="col-md-2"><label class="form-label"><?php echo t('label.size'); ?></label><input class="form-control" name="game_size" placeholder="ex: 467.4M"></div>
-            <div class="col-12"><button class="btn btn-primary" type="submit"><?php echo t('btn.add_line'); ?></button></div>
-          </form>
-        </div>
 
-        <?php if (!empty($gamesMap)): ?>
-          <div class="accordion" id="platformsAccordion">
-          <?php $accIndex = 0; foreach ($gamesMap as $fname => $rows): $accIndex++; $cid = 'collapse'. $accIndex; $hid='heading'.$accIndex; ?>
-            <div class="accordion-item">
-              <h2 class="accordion-header d-flex align-items-center justify-content-between" id="<?php echo h($hid); ?>">
-                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#<?php echo h($cid); ?>" aria-expanded="false" aria-controls="<?php echo h($cid); ?>">
-                  <?php echo h($fname); ?>
-                  <span class="ms-2 small-muted">(<?php printf(t('table.games.lines','%d lignes'), count($rows)); ?>)</span>
-                </button>
-                <form method="post" class="ms-2 me-2" onsubmit="return confirm('<?php echo t('confirm.delete_platform'); ?>');">
-                  <input type="hidden" name="action" value="games_delete_file">
-                  <input type="hidden" name="active_tab" value="tab-games">
-                  <input type="hidden" name="games_file" value="<?php echo h($fname); ?>">
-                  <button class="btn btn-sm btn-outline-danger" type="submit" title="<?php echo t('btn.delete'); ?>"><?php echo t('btn.delete'); ?></button>
-                </form>
-              </h2>
-              <div id="<?php echo h($cid); ?>" class="accordion-collapse collapse" aria-labelledby="<?php echo h($hid); ?>" data-bs-parent="#platformsAccordion" data-games-file="<?php echo h($fname); ?>">
-                <div class="accordion-body">
-                  <div class="small text-muted" id="loading-<?php echo h($accIndex); ?>" style="display:none;">Chargement…</div>
-                  <div id="games-body-<?php echo h($accIndex); ?>"></div>
-                </div>
-              </div>
-            </div>
-          <?php endforeach; ?>
-          </div>
-        <?php endif; ?>
-      <?php endif; ?>
-    </div>
+
+
+
+
+
 
     <!-- Package -->
     <div class="tab-pane fade <?php echo $activeTab==='tab-package'?'show active':''; ?>" id="tab-package">
@@ -2135,7 +2272,6 @@ document.addEventListener('DOMContentLoaded', function() {
             <ul class="small">
               <li><?php printf(t('stats.systems','Systèmes: %d entrée(s)'), count($systems)); ?></li>
               <li><?php printf(t('stats.platforms_loaded','Plateformes chargées: %d fichier(s)'), count($gamesMap)); ?></li>
-              <li><?php printf(t('stats.images_in_zip','Images: %d fichier(s) dans le ZIP'), isset($_SESSION['images_list'])? count($_SESSION['images_list']) : 0); ?></li>
               <li>Images: <?php echo count($images); ?> fichier(s)</li>
             </ul>
             <div class="d-flex flex-column gap-2">
@@ -2150,7 +2286,7 @@ document.addEventListener('DOMContentLoaded', function() {
               <button class="btn btn-outline-primary" type="submit" <?php echo empty($systems)?'disabled':''; ?>><?php echo t('btn.download_systems'); ?></button>
             </form>
             </div>
-            <p class="small-muted mt-2">Le ZIP contiendra systems_list.json à la racine, un dossier images/ et un dossier games/ avec vos fichiers plateformes.</p>
+            <p class="small-muted mt-2"><?php echo t('desc.zip_content'); ?></p>
           </div>
         </div>
       </div>
@@ -2308,13 +2444,163 @@ document.addEventListener('DOMContentLoaded', function() {
     function toggleEditRow(i){
       const row = document.getElementById('edit-row-' + i);
       if (!row) return;
+      
+      const isOpening = row.classList.contains('d-none');
       row.classList.toggle('d-none');
+      
+      // Si on ouvre le formulaire, remplir les listes déroulantes
+      if (isOpening) {
+        // S'assurer que les données Batocera sont chargées (utiliser la même fonction que le formulaire principal)
+        if (batoceraSystems && batoceraSystems.length > 0) {
+          fillEditFormDropdowns(row);
+          setupEditFormListeners(row);
+        } else {
+          // Charger les données d'abord
+          loadBatoceraSystemsDropdowns();
+          // Attendre un peu puis remplir
+          setTimeout(() => {
+            fillEditFormDropdowns(row);
+            setupEditFormListeners(row);
+          }, 100);
+        }
+      }
     }
+    
+    // Fill dropdowns for edit form (use same data as main form)
+    function fillEditFormDropdowns(form) {
+      const nameSel = form.querySelector('.batocera-name-select');
+      const folderSel = form.querySelector('.batocera-folder-select');
+      if (!nameSel || !folderSel || !batoceraSystems || batoceraSystems.length === 0) return;
+      
+      // Clear and populate
+      nameSel.innerHTML = '<option value="">Select...</option>';
+      folderSel.innerHTML = '<option value="">Select...</option>';
+      
+      // Sort by name
+      const sorted = batoceraSystems.slice().sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr', {sensitivity:'base'}));
+      for (const sys of sorted) {
+        const opt1 = document.createElement('option');
+        opt1.value = sys.name;
+        opt1.textContent = sys.name;
+        nameSel.appendChild(opt1);
+        
+        const opt2 = document.createElement('option');
+        opt2.value = sys.folder;
+        opt2.textContent = sys.folder;
+        folderSel.appendChild(opt2);
+      }
+    }
+    
+    // Setup listeners for edit form dropdowns
+    function setupEditFormListeners(form) {
+      const nameSel = form.querySelector('.batocera-name-select');
+      const folderSel = form.querySelector('.batocera-folder-select');
+      const nameInput = form.querySelector('input[name="platform_name"]');
+      const folderInput = form.querySelector('input[name="folder"]');
+      
+      if (!nameSel || !folderSel || !nameInput || !folderInput) return;
+      
+      // Éviter les doublons d'event listeners
+      nameSel.onchange = function() {
+        const sys = batoceraSystems.find(s => s.name === nameSel.value);
+        if (sys) { 
+          folderSel.value = sys.folder;
+          nameInput.value = sys.name;
+          folderInput.value = sys.folder;
+        }
+      };
+      
+      folderSel.onchange = function() {
+        const sys = batoceraSystems.find(s => s.folder === folderSel.value);
+        if (sys) { 
+          nameSel.value = sys.name;
+          nameInput.value = sys.name;
+          folderInput.value = sys.folder;
+        }
+      };
+    }
+    
+    // Toggle platform edit form (nouvelle interface)
+    function togglePlatformEdit(i){
+      const editDiv = document.getElementById('platform-edit-' + i);
+      if (!editDiv) return;
+      editDiv.classList.toggle('d-none');
+    }
+    
+    // Toggle games display (nouvelle interface tableau)
+    function toggleGames(i){
+      const gamesRow = document.getElementById('games-row-' + i);
+      const gamesBody = document.getElementById('games-body-' + i);
+      const loadingDiv = document.getElementById('loading-games-' + i);
+      
+      if (!gamesRow) return;
+      
+      if (gamesRow.classList.contains('d-none')) {
+        // Montrer les jeux
+        gamesRow.classList.remove('d-none');
+        
+        // Charger les jeux si pas encore fait
+        if (!gamesBody.dataset.loaded) {
+          loadingDiv.style.display = 'block';
+          
+          // Trouver le nom du fichier de plateforme
+          const gamesButton = document.querySelector(`button[onclick="toggleGames(${i})"]`);
+          const parentRow = gamesButton.closest('tr');
+          const platformName = parentRow.cells[1].textContent.trim();
+          const gamesFile = platformName + '.json';
+          
+          // Charger les jeux via AJAX
+          loadGamesForPlatform(gamesFile, gamesBody, loadingDiv);
+        }
+      } else {
+        // Cacher les jeux
+        gamesRow.classList.add('d-none');
+      }
+    }
+    
+    // Toggle add game form
+    function toggleAddGame(i){
+      const addGameDiv = document.getElementById('add-game-' + i);
+      if (!addGameDiv) return;
+      addGameDiv.classList.toggle('d-none');
+    }
+    
     // Toggle edit row for games (loaded via AJAX in accordion)
     function toggleGameEditRow(i){
       const row = document.getElementById('game-edit-row-' + i);
       if (!row) return;
       row.classList.toggle('d-none');
+    }
+    
+    // Load games for a specific platform
+    function loadGamesForPlatform(gamesFile, targetBody, loadingDiv) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      
+      window.activeRequests = window.activeRequests || new Set();
+      window.activeRequests.add(controller);
+      
+      fetch(window.location.pathname + '?render_games_table=1&file=' + encodeURIComponent(gamesFile), {
+        signal: controller.signal
+      })
+      .then(response => {
+        clearTimeout(timeoutId);
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.text();
+      })
+      .then(html => {
+        targetBody.innerHTML = html;
+        targetBody.dataset.loaded = '1';
+        loadingDiv.style.display = 'none';
+        window.activeRequests.delete(controller);
+      })
+      .catch(err => {
+        clearTimeout(timeoutId);
+        window.activeRequests.delete(controller);
+        loadingDiv.style.display = 'none';
+        const errorMsg = err.name === 'AbortError' ? 'Timeout (30s)' : (err && err.message ? err.message : err);
+        targetBody.innerHTML = '<div class="text-danger">Erreur de chargement: ' + errorMsg + '</div>';
+      });
     }
     
     // Enforce max 20 selected files for games upload
@@ -2376,7 +2662,7 @@ document.addEventListener('DOMContentLoaded', function() {
       // Also listen to Bootstrap event (if present) purely to hide overlay on heavy tabs
       document.addEventListener('shown.bs.tab', (ev) => {
         const target = ev.target && ev.target.getAttribute ? ev.target.getAttribute('data-bs-target') : '';
-        if (target === '#tab-systems' || target === '#tab-games') {
+        if (target === '#tab-systems') {
           setTimeout(hide, 150);
         }
       });
@@ -2387,7 +2673,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Deferred load of platform games tables when an accordion is expanded
     (function(){
-      const accordion = document.getElementById('platformsAccordion');
+      const accordion = document.getElementById('platformsSystemsAccordion');
       if (!accordion) return;
       
       // Load games page function
@@ -2398,9 +2684,9 @@ document.addEventListener('DOMContentLoaded', function() {
           return;
         }
         
-        const idx = btn.closest('.accordion-body').querySelector('[id^="games-body-"]').id.replace('games-body-','');
-        const target = document.getElementById('games-body-' + idx);
-        const loading = document.getElementById('loading-' + idx);
+        const idx = btn.closest('.accordion-body').querySelector('[id^="games-body-platform-"]').id.replace('games-body-platform-','');
+        const target = document.getElementById('games-body-platform-' + idx);
+        const loading = document.getElementById('loading-platform-' + idx);
         if (!target) return;
         if (loading) loading.style.display = 'block';
         console.log('[RGSX] Loading games page', page, 'for', file);
@@ -2447,9 +2733,9 @@ document.addEventListener('DOMContentLoaded', function() {
           return;
         }
         
-        const idx = panel.id.replace('collapse','');
-        const target = document.getElementById('games-body-' + idx);
-        const loading = document.getElementById('loading-' + idx);
+        const idx = panel.id.replace('platform-','');
+        const target = document.getElementById('games-body-platform-' + idx);
+        const loading = document.getElementById('loading-platform-' + idx);
         if (!target || target.dataset.loaded === '1') return;
         if (loading) loading.style.display = 'block';
         console.log('[RGSX] Loading games table for', file);

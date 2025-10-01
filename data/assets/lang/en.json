@@ -1,8 +1,7 @@
 {
-  "desc.main": "One page to: scrape games, edit systems_list.json, edit per-platform game lists and build a ZIP (systems_list.json, images/, games/).",
+  "desc.main": "One page to: scrape games, edit per-platform game lists and build a data ZIP for RGSX (systems_list.json, images/, games/).",
   "tab.scrape": "Scrape",
-  "tab.systems": "Platforms (system_list.json)",
-  "tab.games": "Games (games/PlatformName.json)",
+  "tab.systems": "Edit Platforms / Games",
   "tab.package": "ZIP Package",
 
   "label.platform_name": "platform_name",
@@ -97,4 +96,12 @@
   ,"scrape.urls_label": "URLs or HTML"
   ,"placeholder.select_platform": "Platform..."
   ,"placeholder.select_folder": "Folder..."
+  ,"label.games": "Games"
+  ,"label.actions": "Actions"
+  ,"btn.add_game": "Add a game"
+  ,"label.games_of_platform": "Games of %s (%d)"
+  ,"desc.zip_content": "The ZIP will contain systems_list.json at the root, an images/ folder and a games/ folder with your platform files."
+  ,"label.sort_order": "Sort order"
+  ,"sort.original": "Original order"
+  ,"sort.alphabetical": "Alphabetical (A-Z)"
 }
