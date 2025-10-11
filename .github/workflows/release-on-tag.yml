@@ -1,3 +1,5 @@
+# Pour déclencher ce workflow : git tag v1.X && git push origin v1.X
+# OU en une seule ligne : git tag v1.X && git push origin --tags
 name: Release on tag
 
 on:
