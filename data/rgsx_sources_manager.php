@@ -298,9 +298,13 @@ function http_fetch_1fichier_with_password(string $url, string $password, int $t
       $ch = curl_init($url);
       $headers = $headersBase;
       if ($method === 'POST') { $headers[] = 'Content-Type: application/x-www-form-urlencoded'; }
+      
+      // Pour le POST, désactiver FOLLOWLOCATION pour voir la redirection
+      $followLocation = ($method !== 'POST');
+      
       curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_FOLLOWLOCATION => $followLocation,
         CURLOPT_MAXREDIRS => 5,
         CURLOPT_CONNECTTIMEOUT => $timeout,
         CURLOPT_TIMEOUT => $timeout,
@@ -332,19 +336,40 @@ function http_fetch_1fichier_with_password(string $url, string $password, int $t
     [$ok1, $code1, $body1] = $mk('GET');
     // POST password
     [$ok2, $code2, $body2, $err2, $info2] = $mk('POST', ['pass' => $password]);
-    // Then GET listing again
+    // Petit délai pour laisser le serveur traiter le cookie
+    usleep(500000); // 0.5 secondes
+    // Then GET listing again (important: after POST, server may set cookie)
     [$ok3, $code3, $body3, $err3, $info3] = $mk('GET');
     $cleanup();
+    
+    // Vérifier si on a toujours le formulaire de mot de passe
+    $hasPasswordForm = stripos($body3, 'protégé par mot de passe') !== false || 
+                       stripos($body3, 'name="pass"') !== false ||
+                       stripos($body3, 'password protected') !== false;
+    
     $ok = $ok3 || $ok2 || $ok1;
     $code = $ok3 ? $code3 : ($ok2 ? $code2 : $code1);
     $body = $ok3 ? $body3 : ($ok2 ? $body2 : $body1);
     $info = $ok3 ? $info3 : $info2;
+    
+    // Si on a toujours le formulaire, essayer le body du POST directement
+    if ($hasPasswordForm && $ok2 && $body2 !== '') {
+      $hasPasswordForm2 = stripos($body2, 'protégé par mot de passe') !== false || 
+                         stripos($body2, 'name="pass"') !== false;
+      if (!$hasPasswordForm2) {
+        $body = $body2;
+        $code = $code2;
+        $info = $info2;
+      }
+    }
+    
     return [
       'ok' => $ok,
       'status' => $code,
       'body' => $body,
       'error' => $ok ? null : ($err3 ?: $err2 ?: 'HTTP ' . $code),
-      'effective_url' => $info['url'] ?? $url
+      'effective_url' => $info['url'] ?? $url,
+      'debug_password_form' => $hasPasswordForm ? 'still present' : 'unlocked'
     ];
   }
   // Fallback without cURL: attempt a POST then use the response body
@@ -744,6 +769,43 @@ function parse_1fichier_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $valid
     $result[] = [$fileName, $fullUrl, $fileSize];
   }
   if ($result) return $result;
+  
+  // Nouvelle approche : chercher des liens avec data-href ou href contenant 1fichier.com
+  $links = $dom->getElementsByTagName('a');
+  foreach ($links as $a) {
+    $href = $a->getAttribute('href');
+    $dataHref = $a->getAttribute('data-href');
+    $actualHref = $dataHref ?: $href;
+    if ($actualHref === '') continue;
+    
+    $fileName = trim($a->textContent);
+    if ($fileName === '' || substr($fileName, -1) === '/') continue;
+    $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+    if (!in_array($ext, $validExtensions)) continue;
+    
+    $fullUrl = $isUrl ? resolve_url($urlOrFragment, $actualHref) : $actualHref;
+    
+    // Chercher la taille dans les éléments siblings ou parent
+    $size = '';
+    $parent = $a->parentNode;
+    if ($parent) {
+      $nextSib = $parent->nextSibling;
+      while ($nextSib) {
+        if ($nextSib->nodeType === XML_ELEMENT_NODE) {
+          $txt = trim($nextSib->textContent);
+          if (preg_match('/\b\d+(?:[.,]\d+)?\s*[KMGTP]?[Bo]\b/i', $txt)) {
+            $size = $txt;
+            break;
+          }
+        }
+        $nextSib = $nextSib->nextSibling;
+      }
+    }
+    
+    $result[] = [$fileName, $fullUrl, $size];
+  }
+  if ($result) return $result;
+  
   // Fallback to heuristics if structure differs
   $rows = $dom->getElementsByTagName('tr');
   foreach ($rows as $tr) {
@@ -1174,12 +1236,25 @@ try {
         }
         $scraped[] = ['label' => $label, 'rows' => $parsed];
         $dbgLabel = $label . ($usedPassword ? ' [PW]' : '');
+        
+        // Compter les liens dans le HTML pour debug
+        $linkCount = 0;
+        $tableCount = 0;
+        if ($html !== '') {
+          $linkCount = substr_count(strtolower($html), '<a ');
+          $tableCount = substr_count(strtolower($html), '<table');
+        }
+        
         $debugHtmls[] = [
           'label' => $dbgLabel,
           'status' => (int)($resp['status'] ?? 0),
           'error' => (string)($resp['error'] ?? ''),
           'effective_url' => (string)($resp['effective_url'] ?? ''),
-          'html' => substr($html, 0, 2000) // Limite pour éviter d'inonder l'UI
+          'parsed_count' => count($parsed),
+          'link_count' => $linkCount,
+          'table_count' => $tableCount,
+          'password_debug' => (string)($resp['debug_password_form'] ?? ''),
+          'html' => substr($html, 0, 8000) // Augmenté pour mieux diagnostiquer 1fichier
         ];
       }
       $_SESSION['last_scrape'] = $scraped;
@@ -1193,6 +1268,9 @@ try {
           $message .= '<div style="margin-bottom:6px"><b>' . htmlspecialchars($dbg['label']) . '</b>';
           if (!empty($dbg['effective_url'])) { $message .= ' <small class="text-muted">(' . htmlspecialchars($dbg['effective_url']) . ')</small>'; }
           $message .= '<br><small>HTTP ' . htmlspecialchars((string)$dbg['status']) . (!empty($dbg['error']) ? (' — ' . htmlspecialchars($dbg['error'])) : '') . '</small>';
+          $message .= '<br><small class="text-info">Parsed: ' . $dbg['parsed_count'] . ' fichiers | Links: ' . $dbg['link_count'] . ' | Tables: ' . $dbg['table_count'];
+          if (!empty($dbg['password_debug'])) { $message .= ' | Password: <span class="text-warning">' . htmlspecialchars($dbg['password_debug']) . '</span>'; }
+          $message .= '</small>';
           $message .= '<pre style="max-height:200px;overflow:auto;font-size:11px;background:#222;color:#eee;">' . htmlspecialchars($dbg['html']) . '</pre></div>';
         }
       }
