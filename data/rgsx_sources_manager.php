@@ -1119,7 +1119,7 @@ $activeTab = $_POST['active_tab'] ?? $_GET['active_tab'] ?? $_SESSION['active_ta
 $message = '';
 $error = '';
 $allowedExtensions = [
-    '40t','68k','7z','a0','a26','a52','a78','abs','actionmax','adf','adl','adm','ads','adz','app','apd','atr','atm','atx','auto','axf','b0','bat','bg1','bg2','bbc','bin','bml','boom3','bs','bsx','c','cas','cbn','ccc','cci','ccd','cdi','cdm','cdg','cdr','chd','cmd','cof','col','cqm','cqi','croft','crt','cso','csw','cue','d64','d77','d81','d88','daphne','dat','ddp','dfi','dim','dk','dms','dol','dos','dosbox','dosz','dsk','dup','dx1','dx2','easyrpg','eduke32','elf','exe','fba','fds','fig','fpt','frd','g64','gam','game','gbc','gcz','gd3','gd7','gdi','gem','gen','gg','gz','hb','hdf','hdm','hex','hfe','how','hypseus','ikemen','ima','img','int','ipf','ipk3','iso','iwd','iwd2','j64','jag','jfd','kip','lbd','lha','libretro','lnk','love','lua','lutro','lux','lx','m3u','m3u8','m5','m7','md','mdf','mds','mfi','mfm','mgw','min','msa','mugen','mx1','mx2','n64','nca','ndd','neo','nes','nib','nrg','nro','nso','nx','ogv','p','p8','pak','pb','pbp','pc','pce','pk3','png','po','prg','prx','pst','psv','pxp','rar','raze','rem','ri','rom','rp9','rpk','rpx','rsdk','rvz','sbw','sc','scummvm','sfc','sg','sgd','smc','sms','solarus','squashfs','st','sv','swf','swc','symbian','t64','t77','table','tap','tar','tfd','tgc','tic','toc','txt','u88','uae','uef','ufi','uze','v32','v64','vb','vboy','vec','vpk','vpx','wad','wav','wbfs','wia','win','windows','wine','woz','ws','wsc','wua','wud','wux','xbe','xcp','xci','xdf','xex','xfd','zip','zar','zcxi','zso'
+    '40t','68k','7z','a0','a26','a52','a78','abs','actionmax','adf','adl','adm','ads','adz','app','apd','atr','atm','atx','auto','axf','b0','bat','bg1','bg2','bbc','bin','bml','boom3','bs','bsx','c','cas','cbn','ccc','cci','ccd','cdi','cdm','cdg','cdr','chd','cmd','cof','col','cqm','cqi','croft','crt','cso','csw','cue','d64','d77','d81','d88','daphne','dat','ddp','dfi','dim','dk','dms','dol','dos','dosbox','dosz','dsk','dup','dx1','dx2','easyrpg','eduke32','elf','exe','fba','fds','fig','fpt','frd','g64','gam','game','gbc','gcz','gd3','gd7','gdi','gem','gen','gg','gz','hb','hdf','hdm','hex','hfe','how','hypseus','ikemen','ima','img','int','ipf','ipk3','iso','iwd','iwd2','j64','jag','jfd','kip','lbd','lha','libretro','lnk','love','lua','lutro','lux','lx','m3u','m3u8','m5','m7','md','mdf','mds','mfi','mfm','mgw','min','msa','mugen','mx1','mx2','n64','nca','ndd','neo','nes','nib','nrg','nro','nso','nx','ogv','p','p8','pak','pb','pbp','pc','pce','pk3','png','po','prg','prx','pst','psv','pxp','rar','raze','rem','ri','rom','rp9','rpk','rpx','rsdk','rvz','sbw','sc','scummvm','sfc','sg','sgd','smc','sms','solarus','squashfs','st','sv','swf','swc','symbian','t64','t77','table','tap','tar','tfd','tgc','tic','toc','txt','u88','uae','uef','ufi','uze','v32','v64','vb','vboy','vec','vpk','vpx','wad','wav','wbfs','wia','win','windows','wine','wsquashfs','woz','ws','wsc','wua','wud','wux','xbe','xcp','xci','xdf','xex','xfd','zip','zar','zcxi','zso'
 ];
 
 try {
@@ -1724,6 +1724,16 @@ try {
     case 'games_clear_all':
       $_SESSION['platform_games'] = [];
       $message = t('msg.games.all_cleared');
+      break;
+      
+    case 'games_clear_platform':
+      $file = $_POST['games_file'] ?? '';
+      if ($file && isset($_SESSION['platform_games'][$file])) {
+        $_SESSION['platform_games'][$file] = [];
+        $message = sprintf(t('msg.games.platform_cleared'), h($file));
+      } else {
+        $error = t('err.file_not_selected');
+      }
       break;
 
     // Images (kept for compatibility, UI removed)
@@ -2348,8 +2358,17 @@ document.addEventListener('DOMContentLoaded', function() {
                 <div class="p-3 bg-light">
                   <div class="mb-3">
                     <strong><?php echo sprintf(t('label.games_of_platform'), h($platformName), $gamesCount); ?></strong>
-                    <!-- Bouton pour ajouter un jeu -->
-                    <button class="btn btn-sm btn-success float-end" onclick="toggleAddGame(<?php echo $realIndex; ?>)"><?php echo t('btn.add_game'); ?></button>
+                    <div class="float-end">
+                      <!-- Bouton pour ajouter un jeu -->
+                      <button class="btn btn-sm btn-success me-2" onclick="toggleAddGame(<?php echo $realIndex; ?>)"><?php echo t('btn.add_game'); ?></button>
+                      <!-- Bouton pour supprimer tous les jeux de cette plateforme -->
+                      <form method="post" class="d-inline" onsubmit="return confirm('Supprimer tous les jeux de cette plateforme ?');">
+                        <input type="hidden" name="action" value="games_clear_platform">
+                        <input type="hidden" name="active_tab" value="tab-systems">
+                        <input type="hidden" name="games_file" value="<?php echo h($platformFile); ?>">
+                        <button class="btn btn-sm btn-outline-warning" type="submit"><?php echo t('btn.clean_games'); ?></button>
+                      </form>
+                    </div>
                   </div>
                   
                   <!-- Formulaire d'ajout de jeu caché -->

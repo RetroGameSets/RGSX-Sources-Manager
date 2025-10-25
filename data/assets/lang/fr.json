@@ -54,6 +54,7 @@
   "msg.games.row_updated": "Ligne mise à jour.",
   "msg.games.row_deleted": "Ligne supprimée.",
   "msg.games.platform_deleted": "Plateforme supprimée: %s",
+  "msg.games.platform_cleared": "Tous les jeux de %s ont été supprimés.",
   "msg.games.all_cleared": "Toutes les listes de jeux ont été vidées.",
 
   "err.missing_params": "Paramètres manquants.",
@@ -100,6 +101,7 @@
   ,"label.games": "Jeux"
   ,"label.actions": "Actions"
   ,"btn.add_game": "Ajouter un jeu"
+  ,"btn.clean_games": "Nettoyer les jeux"
   ,"label.games_of_platform": "Jeux de %s (%d)"
   ,"desc.zip_content": "Le ZIP contiendra systems_list.json à la racine, un dossier images/ et un dossier games/ avec vos fichiers plateformes."
   ,"label.sort_order": "Ordre de tri"

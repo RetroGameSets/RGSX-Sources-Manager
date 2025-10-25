@@ -53,6 +53,7 @@
   "msg.games.row_updated": "Row updated.",
   "msg.games.row_deleted": "Row deleted.",
   "msg.games.platform_deleted": "Platform removed: %s",
+  "msg.games.platform_cleared": "All games from %s have been removed.",
   "msg.games.all_cleared": "All game lists have been cleared.",
 
   "err.missing_params": "Missing parameters.",
@@ -99,6 +100,7 @@
   ,"label.games": "Games"
   ,"label.actions": "Actions"
   ,"btn.add_game": "Add a game"
+  ,"btn.clean_games": "Clean games"
   ,"label.games_of_platform": "Games of %s (%d)"
   ,"desc.zip_content": "The ZIP will contain systems_list.json at the root, an images/ folder and a games/ folder with your platform files."
   ,"label.sort_order": "Sort order"
