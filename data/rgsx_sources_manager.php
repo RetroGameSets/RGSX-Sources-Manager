@@ -52,6 +52,66 @@ function format_bytes($bytes) {
     return sprintf('%.2f %s', $bytes, $units[$i]);
 }
 
+function parse_file_size_to_bytes($sizeStr) {
+    if (!$sizeStr || trim($sizeStr) === '') return 0;
+    
+    $sizeStr = trim($sizeStr);
+    
+    // Pattern plus large pour capturer différents formats
+    // Exemples: "1.5MB", "942.1K", "1,234 GB", "500 bytes", "1.0M"
+    if (preg_match('/(\d+(?:[.,]\d+)?)\s*([KMGTPE]?)([BI]?)/i', $sizeStr, $matches)) {
+        $number = (float)str_replace(',', '.', $matches[1]);
+        $unit = strtoupper($matches[2]); // K, M, G, T, P, E
+        
+        $multiplier = 1;
+        switch ($unit) {
+            case 'K': $multiplier = 1024; break;
+            case 'M': $multiplier = 1024 * 1024; break;
+            case 'G': $multiplier = 1024 * 1024 * 1024; break;
+            case 'T': $multiplier = 1024 * 1024 * 1024 * 1024; break;
+            case 'P': $multiplier = 1024 * 1024 * 1024 * 1024 * 1024; break;
+            case 'E': $multiplier = 1024 * 1024 * 1024 * 1024 * 1024 * 1024; break;
+        }
+        
+        return (int)($number * $multiplier);
+    }
+    
+    // Pattern pour capturer juste les nombres (bytes)
+    if (preg_match('/(\d+(?:[.,]\d+)?)/', $sizeStr, $matches)) {
+        return (int)((float)str_replace(',', '.', $matches[1]));
+    }
+    
+    return 0;
+}
+
+function calculate_total_size($rows) {
+    $totalBytes = 0;
+    $debugSizes = [];
+    
+    foreach ($rows as $row) {
+        // $row[2] contient la taille (nom, url, taille)
+        if (isset($row[2]) && !empty($row[2])) {
+            $sizeStr = $row[2];
+            $bytes = parse_file_size_to_bytes($sizeStr);
+            $totalBytes += $bytes;
+            
+            // Garder quelques exemples pour debug
+            if (count($debugSizes) < 3) {
+                $debugSizes[] = "$sizeStr → $bytes bytes";
+            }
+        }
+    }
+    
+    $result = format_bytes($totalBytes);
+    
+    // Debug temporaire : afficher quelques exemples si la taille totale est 0
+    if ($totalBytes == 0 && !empty($debugSizes)) {
+        $result .= ' (debug: ' . implode(', ', $debugSizes) . ')';
+    }
+    
+    return $result;
+}
+
 // Normalize URL-like strings: add percent-encoding for spaces and query values
 function normalize_url_like(string $u): string {
   $u = trim($u);
@@ -1058,7 +1118,9 @@ $action = $_POST['action'] ?? '';
 $activeTab = $_POST['active_tab'] ?? $_GET['active_tab'] ?? $_SESSION['active_tab'] ?? 'tab-scrape';
 $message = '';
 $error = '';
-$allowedExtensions = ['xci','nsp','zip','rar','7z','tar','gz','chd','wsquashfs','iso','wbfs','nds','dsi','cia','3ds','cia','gba','gbc','gb','nes','sfc','smc','gen','md','sms','gg','pce','sgx','a26','a78','bin','cue','img','pbp','rom','n64'];
+$allowedExtensions = [
+    '40t','68k','7z','a0','a26','a52','a78','abs','actionmax','adf','adl','adm','ads','adz','app','apd','atr','atm','atx','auto','axf','b0','bat','bg1','bg2','bbc','bin','bml','boom3','bs','bsx','c','cas','cbn','ccc','cci','ccd','cdi','cdm','cdg','cdr','chd','cmd','cof','col','cqm','cqi','croft','crt','cso','csw','cue','d64','d77','d81','d88','daphne','dat','ddp','dfi','dim','dk','dms','dol','dos','dosbox','dosz','dsk','dup','dx1','dx2','easyrpg','eduke32','elf','exe','fba','fds','fig','fpt','frd','g64','gam','game','gbc','gcz','gd3','gd7','gdi','gem','gen','gg','gz','hb','hdf','hdm','hex','hfe','how','hypseus','ikemen','ima','img','int','ipf','ipk3','iso','iwd','iwd2','j64','jag','jfd','kip','lbd','lha','libretro','lnk','love','lua','lutro','lux','lx','m3u','m3u8','m5','m7','md','mdf','mds','mfi','mfm','mgw','min','msa','mugen','mx1','mx2','n64','nca','ndd','neo','nes','nib','nrg','nro','nso','nx','ogv','p','p8','pak','pb','pbp','pc','pce','pk3','png','po','prg','prx','pst','psv','pxp','rar','raze','rem','ri','rom','rp9','rpk','rpx','rsdk','rvz','sbw','sc','scummvm','sfc','sg','sgd','smc','sms','solarus','squashfs','st','sv','swf','swc','symbian','t64','t77','table','tap','tar','tfd','tgc','tic','toc','txt','u88','uae','uef','ufi','uze','v32','v64','vb','vboy','vec','vpk','vpx','wad','wav','wbfs','wia','win','windows','wine','woz','ws','wsc','wua','wud','wux','xbe','xcp','xci','xdf','xex','xfd','zip','zar','zcxi','zso'
+];
 
 try {
   switch ($action) {
@@ -1928,7 +1990,7 @@ foreach ($images as $im) { if (!empty($im['name'])) { $imagesByName[$im['name']]
         <?php foreach ($scraped as $idx => $entry): ?>
           <div class="mb-3 scrape-result-block" data-rows='<?php echo h(json_encode($entry['rows'], JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE)); ?>'>
             <div class="d-flex align-items-center justify-content-between">
-              <div><span class="pill"><?php echo t('scrape.source','Source'); ?></span> <?php echo h($entry['label']); ?> — <span class="small-muted"><?php printf(t('scrape.files_count','%d fichier(s)'), count($entry['rows'])); ?></span></div>
+              <div><span class="pill"><?php echo t('scrape.source','Source'); ?></span> <?php echo h($entry['label']); ?> — <span class="small-muted"><?php printf(t('scrape.files_count','%d fichier(s)'), count($entry['rows'])); ?> | <?php echo calculate_total_size($entry['rows']); ?></span></div>
               <form method="post" class="d-flex align-items-center gap-2 scrape-attach-form">
                 <input type="hidden" name="action" value="attach_scrape_to_platform">
                 <input type="hidden" name="active_tab" value="tab-scrape">
