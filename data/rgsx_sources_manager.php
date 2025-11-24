@@ -940,32 +940,139 @@ function parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validE
   return $out;
 }
 function parse_archiveorg_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
-    $tables = $dom->getElementsByTagName('table');
-    $result = [];
-    foreach ($tables as $table) {
-        if ($table->getAttribute('class') === 'directory-listing-table') {
-            foreach ($table->getElementsByTagName('tr') as $tr) {
-                $tds = $tr->getElementsByTagName('td');
-                if ($tds->length < 3) continue;
-                $firstTd = $tds->item(0);
-                $link = $firstTd->getElementsByTagName('a')->item(0);
-                if (!$link) continue;
-                $fileName = trim($link->textContent);
-                if (stripos($fileName, 'Go to parent directory') !== false) continue;
-                $href = $link->getAttribute('href');
-                $fileSize = trim($tds->item(2)->textContent);
-                $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
-                if (!in_array($extension, $validExtensions)) continue;
-                if ($isUrl && !preg_match('/^https?:\/\//', $href)) {
-                    $base = rtrim($urlOrFragment, '/') . '/';
-                    $fullUrl = $base . ltrim($href, '/');
-                } else {
-                    $fullUrl = $href;
-                }
-                $result[] = [$fileName, $fullUrl, $fileSize];
-            }
+    global $__parse_debug__;
+    
+    // Archive.org wraps directory listings in <pre><table>...
+    // DOMDocument treats <pre> content as text, so we need to extract and re-parse
+    $pres = $dom->getElementsByTagName('pre');
+    $foundTableInPre = false;
+    foreach ($pres as $pre) {
+        // Get the innerHTML of the pre tag
+        $innerHTML = '';
+        foreach ($pre->childNodes as $child) {
+            $innerHTML .= $dom->saveHTML($child);
+        }
+        
+        // Check if it contains a table
+        if (stripos($innerHTML, '<table') !== false && stripos($innerHTML, 'directory-listing-table') !== false) {
+            // Re-parse this HTML properly
+            $tempDom = new DOMDocument();
+            libxml_use_internal_errors(true);
+            @$tempDom->loadHTML('<?xml encoding="UTF-8">' . $innerHTML);
+            $dom = $tempDom;
+            $foundTableInPre = true;
+            break;
         }
     }
+    
+    $tables = $dom->getElementsByTagName('table');
+    $result = [];
+    $debugInfo = ['tables_found' => 0, 'rows_checked' => 0, 'links_found' => 0, 'filtered_reasons' => [], 'pre_reparse' => $foundTableInPre];
+    
+    foreach ($tables as $table) {
+        $class = $table->getAttribute('class');
+        $debugInfo['tables_found']++;
+        
+        // Accept both 'directory-listing-table' and tables with 'directory-listing-table' in their class list
+        if (stripos($class, 'directory-listing-table') === false) {
+            $debugInfo['filtered_reasons'][] = "Table skipped (class='$class')";
+            continue;
+        }
+        
+        foreach ($table->getElementsByTagName('tr') as $tr) {
+            $debugInfo['rows_checked']++;
+            $tds = $tr->getElementsByTagName('td');
+            if ($tds->length < 3) {
+                if ($debugInfo['rows_checked'] <= 5) $debugInfo['filtered_reasons'][] = "Row {$debugInfo['rows_checked']}: not enough cells ({$tds->length})";
+                continue;
+            }
+            $firstTd = $tds->item(0);
+            
+            // Debug: check what's in the first TD
+            if ($debugInfo['rows_checked'] <= 10) {
+                $tdContent = substr(trim($firstTd->textContent), 0, 100);
+                $tdLinks = $firstTd->getElementsByTagName('a')->length;
+                // Get raw HTML of the TD to see structure
+                $tdHtml = $dom->saveHTML($firstTd);
+                $debugInfo['filtered_reasons'][] = "Row {$debugInfo['rows_checked']}: TD has $tdLinks links, HTML: " . substr($tdHtml, 0, 200);
+            }
+            
+            $link = $firstTd->getElementsByTagName('a')->item(0);
+            if (!$link) {
+                // No link found - this might be a restricted file on Archive.org
+                // In this case, the TD contains only the filename text
+                // Check if this is a restricted file row
+                $rowClass = $tr->getAttribute('class');
+                if (stripos($rowClass, 'restricted') !== false || $tds->length >= 3) {
+                    // Try to extract filename from TD text content
+                    $fileName = trim($firstTd->textContent);
+                    if ($fileName !== '' && substr($fileName, -1) !== '/') {
+                        $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+                        if (in_array($extension, $validExtensions)) {
+                            // Build the URL ourselves
+                            $fileSize = $tds->length >= 3 ? trim($tds->item(2)->textContent) : '';
+                            
+                            if ($isUrl && !preg_match('/^https?:\/\//', $fileName)) {
+                                $base = rtrim($urlOrFragment, '/') . '/';
+                                $fullUrl = $base . rawurlencode($fileName);
+                            } else {
+                                $fullUrl = $fileName;
+                            }
+                            
+                            $result[] = [$fileName, $fullUrl, $fileSize];
+                            $debugInfo['links_found']++; // Count as found even without <a> tag
+                        }
+                    }
+                }
+                if ($debugInfo['rows_checked'] <= 5) $debugInfo['filtered_reasons'][] = "Row {$debugInfo['rows_checked']}: no link found";
+                continue;
+            }
+            
+            $debugInfo['links_found']++;
+            $fileName = trim($link->textContent);
+            
+            if ($fileName === '' || stripos($fileName, 'Go to parent directory') !== false) {
+                if ($debugInfo['links_found'] <= 3) $debugInfo['filtered_reasons'][] = "Link {$debugInfo['links_found']}: parent dir or empty";
+                continue;
+            }
+            
+            // Decode URL-encoded filename from href as fallback
+            $href = $link->getAttribute('href');
+            if ($href === '') {
+                if ($debugInfo['links_found'] <= 3) $debugInfo['filtered_reasons'][] = "Link {$debugInfo['links_found']}: empty href";
+                continue;
+            }
+            
+            // Use href to extract clean filename (better than textContent which might have extra text)
+            // For relative paths, parse_url might not work correctly, so handle both cases
+            $parsed = @parse_url($href);
+            $pathPart = isset($parsed['path']) ? $parsed['path'] : $href;
+            $hrefFileName = urldecode(basename($pathPart));
+            if ($hrefFileName !== '' && $hrefFileName !== '.' && $hrefFileName !== '..') {
+                $fileName = $hrefFileName;
+            }
+            
+            $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+            if (!in_array($extension, $validExtensions)) {
+                if ($debugInfo['links_found'] <= 5) $debugInfo['filtered_reasons'][] = "Link {$debugInfo['links_found']}: ext '$extension' not in validExtensions (file: $fileName)";
+                continue;
+            }
+            
+            $fileSize = trim($tds->item(2)->textContent);
+            
+            if ($isUrl && !preg_match('/^https?:\/\//', $href)) {
+                $base = rtrim($urlOrFragment, '/') . '/';
+                $fullUrl = $base . ltrim($href, '/');
+            } else {
+                $fullUrl = $href;
+            }
+            $result[] = [$fileName, $fullUrl, $fileSize];
+        }
+    }
+    
+    // Store debug info globally so it can be accessed by caller
+    $__parse_debug__ = json_encode($debugInfo, JSON_PRETTY_PRINT);
+    
     return $result;
 }
 function parse_archiveorg_pre($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
@@ -1082,9 +1189,13 @@ function parse_archiveorg_zipview($dom, $sourceLabel, $isUrl, $urlOrFragment, $v
   return $results;
 }
 function parse_auto($html, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+    global $__parse_debug__;
+    $__parse_debug__ = '';
+    
     $dom = new DOMDocument();
     libxml_use_internal_errors(true);
     @$dom->loadHTML($html);
+    
     $res = parse_archiveorg_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
     if ($res) return $res;
     $archExtRes = parse_archiveorg_archext($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
@@ -1278,6 +1389,22 @@ try {
         if ($html !== '') {
           $parsed = parse_auto($html, $label, $isUrl, $baseForParse, $validExtensions);
         }
+        
+        // Capture parse debug info
+        global $__parse_debug__;
+        $parseDebugInfo = $__parse_debug__ ?? '';
+        
+        // Also capture a sample of raw HTML around "10 Second Ninja" for debugging
+        $rawSample = '';
+        if (stripos($html, '10 Second Ninja') !== false || stripos($html, '10%20Second%20Ninja') !== false) {
+            $pos = stripos($html, '10 Second Ninja');
+            if ($pos === false) $pos = stripos($html, '10%20Second%20Ninja');
+            if ($pos !== false) {
+                $start = max(0, $pos - 300);
+                $rawSample = substr($html, $start, 600);
+            }
+        }
+        
         // If Archive.org 403 on view_archive and parsing failed, try ZIP central directory listing via HTTP range
         if (empty($parsed) && $isUrl && (int)($resp['status'] ?? 0) === 403 && stripos($input, 'view_archive.php') !== false) {
           $info = archiveorg_zip_url_from_view_archive($input);
@@ -1307,6 +1434,20 @@ try {
           $tableCount = substr_count(strtolower($html), '<table');
         }
         
+        // Extract error_log content for this parse attempt
+        $logFile = __DIR__ . '/assets/debug.log';
+        $recentLog = '';
+        if (is_file($logFile)) {
+          $logLines = @file($logFile);
+          if ($logLines) {
+            // Get last 5 lines that contain "parse_archiveorg_table"
+            $relevantLines = array_filter($logLines, function($line) {
+              return stripos($line, 'parse_archiveorg_table') !== false || stripos($line, 'parse_auto') !== false;
+            });
+            $recentLog = implode('', array_slice($relevantLines, -5));
+          }
+        }
+        
         $debugHtmls[] = [
           'label' => $dbgLabel,
           'status' => (int)($resp['status'] ?? 0),
@@ -1316,6 +1457,11 @@ try {
           'link_count' => $linkCount,
           'table_count' => $tableCount,
           'password_debug' => (string)($resp['debug_password_form'] ?? ''),
+          'valid_extensions_count' => count($validExtensions),
+          'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
+          'parse_debug' => $parseDebugInfo,
+          'raw_sample' => $rawSample,
+          'error_log' => $recentLog,
           'html' => substr($html, 0, 8000) // Augmenté pour mieux diagnostiquer 1fichier
         ];
       }
@@ -1332,8 +1478,21 @@ try {
           $message .= '<br><small>HTTP ' . htmlspecialchars((string)$dbg['status']) . (!empty($dbg['error']) ? (' — ' . htmlspecialchars($dbg['error'])) : '') . '</small>';
           $message .= '<br><small class="text-info">Parsed: ' . $dbg['parsed_count'] . ' fichiers | Links: ' . $dbg['link_count'] . ' | Tables: ' . $dbg['table_count'];
           if (!empty($dbg['password_debug'])) { $message .= ' | Password: <span class="text-warning">' . htmlspecialchars($dbg['password_debug']) . '</span>'; }
+          if (!empty($dbg['valid_extensions_count'])) { 
+            $message .= '<br>Valid extensions: ' . $dbg['valid_extensions_count'] . ' (' . htmlspecialchars($dbg['extensions_sample']) . '...)'; 
+          }
+          if (!empty($dbg['parse_debug'])) {
+            $message .= '<br><span class="text-warning">Parser debug:</span><pre style="font-size:10px;background:#333;color:#0f0;padding:4px;margin:2px 0;">' . htmlspecialchars($dbg['parse_debug']) . '</pre>';
+          }
+          if (!empty($dbg['raw_sample'])) {
+            $message .= '<br><span class="text-info">Raw HTML sample around first file:</span><pre style="font-size:10px;background:#333;color:#0ff;padding:4px;margin:2px 0;max-height:150px;overflow:auto;">' . htmlspecialchars($dbg['raw_sample']) . '</pre>';
+          }
+          if (!empty($dbg['error_log'])) {
+            $message .= '<br><span class="text-warning">Error log:</span><pre style="font-size:10px;background:#333;color:#ff0;padding:4px;margin:2px 0;">' . htmlspecialchars($dbg['error_log']) . '</pre>';
+          }
           $message .= '</small>';
-          $message .= '<pre style="max-height:200px;overflow:auto;font-size:11px;background:#222;color:#eee;">' . htmlspecialchars($dbg['html']) . '</pre></div>';
+          $message .= '<details><summary style="font-size:11px;cursor:pointer;">Voir extrait HTML</summary>';
+          $message .= '<pre style="max-height:200px;overflow:auto;font-size:11px;background:#222;color:#eee;">' . htmlspecialchars($dbg['html']) . '</pre></details></div>';
         }
       }
       $message .= '</details>';
