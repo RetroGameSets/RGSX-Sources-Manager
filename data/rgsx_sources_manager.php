@@ -152,13 +152,13 @@ function normalize_url_like(string $u): string {
 }
 
 // Robust HTTP fetch (cURL with fallback to file_get_contents) + debug info
-function http_fetch(string $url, int $timeout = 30): array {
+function http_fetch(string $url, int $timeout = 30, array $extraHeaders = []): array {
   $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
   $host = parse_url($url, PHP_URL_HOST) ?: '';
   $isArchive = stripos($host, 'archive.org') !== false;
   // Try cURL if available
   if (function_exists('curl_init')) {
-    $try = function($targetUrl, $verifyPeer) use ($timeout, $ua, $isArchive) {
+    $try = function($targetUrl, $verifyPeer) use ($timeout, $ua, $isArchive, $extraHeaders) {
       $ch = curl_init($targetUrl);
       $headers = [
           'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -169,6 +169,7 @@ function http_fetch(string $url, int $timeout = 30): array {
           'Upgrade-Insecure-Requests: 1'
       ];
       if ($isArchive) { $headers[] = 'Referer: https://archive.org/'; $headers[] = 'Origin: https://archive.org'; }
+      if (!empty($extraHeaders)) { $headers = array_merge($headers, $extraHeaders); }
       curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
@@ -209,9 +210,11 @@ function http_fetch(string $url, int $timeout = 30): array {
       ];
     }
     // If Archive.org edge host returns 403, try same path on https://archive.org
+    $altArchive = null;
     if (!$ok && $code === 403 && preg_match('#^ia\d+\.(?:us\.)?archive\.org$#i', $host)) {
       $alt = preg_replace('#^https?://[^/]+#i', 'https://archive.org', $url);
       if (is_string($alt) && $alt !== $url) {
+        $altArchive = $alt;
         [$okAlt, $codeAlt, $bodyAlt, $errAlt, $infoAlt] = $try($alt, true);
         if ($okAlt) {
           return [
@@ -243,6 +246,48 @@ function http_fetch(string $url, int $timeout = 30): array {
         }
       }
     }
+    // If view_archive.php returns 403, try adding access=1 (some IA items require it)
+    if (!$ok && $code === 403 && stripos($url, 'view_archive.php') !== false) {
+      $withAccess = function($u) {
+        $p = @parse_url($u);
+        if (!$p) return null;
+        $q = [];
+        if (!empty($p['query'])) { parse_str($p['query'], $q); }
+        if (!empty($q['access'])) return null;
+        $q['access'] = '1';
+        $rebuilt = ($p['scheme'] ?? 'https') . '://' . ($p['host'] ?? 'archive.org') . ($p['path'] ?? '/view_archive.php');
+        $rebuilt .= '?' . http_build_query($q, '', '&', PHP_QUERY_RFC3986);
+        return $rebuilt;
+      };
+      $cand = $withAccess($url);
+      if ($cand) {
+        [$okA, $codeA, $bodyA, $errA, $infoA] = $try($cand, true);
+        if ($okA) {
+          return [
+            'ok' => true,
+            'status' => $codeA,
+            'body' => $bodyA,
+            'error' => null,
+            'effective_url' => $infoA['url'] ?? $cand
+          ];
+        }
+      }
+      if ($altArchive) {
+        $cand2 = $withAccess($altArchive);
+        if ($cand2) {
+          [$okB, $codeB, $bodyB, $errB, $infoB] = $try($cand2, true);
+          if ($okB) {
+            return [
+              'ok' => true,
+              'status' => $codeB,
+              'body' => $bodyB,
+              'error' => null,
+              'effective_url' => $infoB['url'] ?? $cand2
+            ];
+          }
+        }
+      }
+    }
     return [
       'ok' => $ok,
       'status' => $code,
@@ -252,12 +297,13 @@ function http_fetch(string $url, int $timeout = 30): array {
     ];
   }
   // Fallback: file_get_contents
-  $extraHeaders = "Accept: text/html\r\nAccept-Language: en-US,en;q=0.8\r\nCache-Control: no-cache\r\nUpgrade-Insecure-Requests: 1\r\nAccept-Encoding: gzip, deflate\r\n";
-  if ($isArchive) { $extraHeaders .= "Referer: https://archive.org/\r\nOrigin: https://archive.org\r\n"; }
+  $headerStr = "Accept: text/html\r\nAccept-Language: en-US,en;q=0.8\r\nCache-Control: no-cache\r\nUpgrade-Insecure-Requests: 1\r\nAccept-Encoding: gzip, deflate\r\n";
+  if ($isArchive) { $headerStr .= "Referer: https://archive.org/\r\nOrigin: https://archive.org/\r\n"; }
+  if (!empty($extraHeaders)) { $headerStr .= implode("\r\n", $extraHeaders) . "\r\n"; }
   $ctx = stream_context_create(['http' => [
     'user_agent' => $ua,
     'timeout' => $timeout,
-    'header' => $extraHeaders,
+    'header' => $headerStr,
     'ignore_errors' => true
   ]]);
   $body = @file_get_contents($url, false, $ctx);
@@ -329,6 +375,48 @@ function http_fetch(string $url, int $timeout = 30): array {
             'effective_url' => $alt3
           ];
         }
+      }
+    }
+  }
+  // If view_archive.php returns 403, try adding access=1 (and on archive.org host when coming from ia host)
+  if ($status === 403 && stripos($url, 'view_archive.php') !== false) {
+    $withAccess = function($u) {
+      $p = @parse_url($u);
+      if (!$p) return null;
+      $q = [];
+      if (!empty($p['query'])) { parse_str($p['query'], $q); }
+      if (!empty($q['access'])) return null;
+      $q['access'] = '1';
+      $rebuilt = ($p['scheme'] ?? 'https') . '://' . ($p['host'] ?? 'archive.org') . ($p['path'] ?? '/view_archive.php');
+      $rebuilt .= '?' . http_build_query($q, '', '&', PHP_QUERY_RFC3986);
+      return $rebuilt;
+    };
+    $cands = [];
+    $c1 = $withAccess($url);
+    if ($c1) $cands[] = $c1;
+    if (preg_match('#^ia\d+\.(?:us\.)?archive\.org$#i', $host)) {
+      $alt = preg_replace('#^https?://[^/]+#i', 'https://archive.org', $url);
+      $c2 = $alt ? $withAccess($alt) : null;
+      if ($c2) $cands[] = $c2;
+    }
+    foreach ($cands as $rebuilt) {
+      $bodyA = @file_get_contents($rebuilt, false, $ctx);
+      $statusA = 0; $isGzipA = false;
+      if (isset($http_response_header) && is_array($http_response_header)) {
+        foreach ($http_response_header as $hline) {
+          if (preg_match('#^HTTP/\S+\s+(\d{3})#', $hline, $m)) { $statusA = (int)$m[1]; }
+          if (stripos($hline, 'Content-Encoding:') === 0 && stripos($hline, 'gzip') !== false) { $isGzipA = true; }
+        }
+      }
+      if ($bodyA !== false && $isGzipA) { $decA = @gzdecode($bodyA); if ($decA !== false) { $bodyA = $decA; } }
+      if ($bodyA !== false && ($statusA >= 200 && $statusA < 300)) {
+        return [
+          'ok' => true,
+          'status' => $statusA,
+          'body' => $bodyA,
+          'error' => null,
+          'effective_url' => $rebuilt
+        ];
       }
     }
   }
@@ -538,7 +626,7 @@ function resolve_url(string $base, string $href): string {
 }
 
 // HTTP range fetch (binary-safe), returns [ok,status,body,error,headers]
-function http_fetch_range(string $url, string $rangeSpec, int $timeout = 30): array {
+function http_fetch_range(string $url, string $rangeSpec, int $timeout = 30, array $extraHeaders = []): array {
   $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
   $isArchive = stripos((parse_url($url, PHP_URL_HOST) ?: ''), 'archive.org') !== false;
   if (function_exists('curl_init')) {
@@ -550,6 +638,7 @@ function http_fetch_range(string $url, string $rangeSpec, int $timeout = 30): ar
       'Range: bytes=' . $rangeSpec,
     ];
     if ($isArchive) { $headers[] = 'Referer: https://archive.org/'; $headers[] = 'Origin: https://archive.org'; }
+    if (!empty($extraHeaders)) { $headers = array_merge($headers, $extraHeaders); }
     curl_setopt_array($ch, [
       CURLOPT_RETURNTRANSFER => true,
       CURLOPT_FOLLOWLOCATION => true,
@@ -572,7 +661,8 @@ function http_fetch_range(string $url, string $rangeSpec, int $timeout = 30): ar
     return ['ok'=>($code>=200&&$code<300)&&$body!=='','status'=>$code,'body'=>$body,'error'=>null,'headers'=>explode("\r\n", trim($headersTxt))];
   }
   $hdr = "Range: bytes=$rangeSpec\r\nAccept: */*\r\n";
-  if ($isArchive) { $hdr .= "Referer: https://archive.org/\r\nOrigin: https://archive.org\r\n"; }
+  if ($isArchive) { $hdr .= "Referer: https://archive.org/\r\nOrigin: https://archive.org/\r\n"; }
+  if (!empty($extraHeaders)) { $hdr .= implode("\r\n", $extraHeaders) . "\r\n"; }
   $ctx = stream_context_create(['http' => [
     'timeout' => $timeout,
     'user_agent' => $ua,
@@ -601,9 +691,9 @@ function archiveorg_zip_url_from_view_archive(string $viewUrl): ?array {
   return ['item'=>$item, 'rel'=>$rel, 'download'=>$downloadUrl, 'archiveParam'=>$archivePath];
 }
 
-function list_zip_entries_via_http_range(string $zipUrl, int $timeout = 30): array {
+function list_zip_entries_via_http_range(string $zipUrl, int $timeout = 30, array $extraHeaders = []): array {
   // Fetch last 256KB to find EOCD
-  $tail = http_fetch_range($zipUrl, '-262144', $timeout);
+  $tail = http_fetch_range($zipUrl, '-262144', $timeout, $extraHeaders);
   if (!$tail['ok'] || $tail['body'] === '') return [];
   $headers = $tail['headers'];
   $contentRange = '';
@@ -629,7 +719,7 @@ function list_zip_entries_via_http_range(string $zipUrl, int $timeout = 30): arr
   $cdAbsolute = $cdOffset; // per spec, absolute from file start
   // Fetch the central directory region
   $cdEnd = $cdAbsolute + $cdSize - 1;
-  $cdResp = http_fetch_range($zipUrl, $cdAbsolute . '-' . $cdEnd, $timeout);
+  $cdResp = http_fetch_range($zipUrl, $cdAbsolute . '-' . $cdEnd, $timeout, $extraHeaders);
   if (!$cdResp['ok']) return [];
   $cd = $cdResp['body'];
   $entries = [];
@@ -1331,6 +1421,16 @@ try {
     case 'scrape':
       $urls = trim($_POST['urls'] ?? '');
       $scrapePassword = trim($_POST['scrape_password'] ?? '');
+      $scrapeCookies = trim($_POST['scrape_cookies'] ?? ($_SESSION['scrape_cookies'] ?? ''));
+      $rememberCookies = !empty($_POST['remember_cookies']);
+      $extraHeaders = [];
+      if ($scrapeCookies !== '') { $extraHeaders[] = 'Cookie: ' . $scrapeCookies; }
+      if ($rememberCookies) {
+        $_SESSION['scrape_cookies'] = $scrapeCookies;
+      } else if (array_key_exists('remember_cookies', $_POST) && !$rememberCookies) {
+        // explicit uncheck clears stored cookies
+        unset($_SESSION['scrape_cookies']);
+      }
       // By default, allow all known extensions (not only zip)
       $exts = isset($_POST['extensions']) ? array_map('strtolower', (array)$_POST['extensions']) : $allowedExtensions;
       $validExtensions = array_values(array_intersect($exts, $allowedExtensions));
@@ -1379,7 +1479,7 @@ try {
             $resp = http_fetch_1fichier_with_password($input, $scrapePassword, 30);
             $usedPassword = true;
           } else {
-            $resp = http_fetch($input, 30);
+            $resp = http_fetch($input, 30, $extraHeaders);
           }
           $html = (string)($resp['body'] ?? '');
         } else { $html = $input; $resp = ['ok'=>true,'status'=>200,'error'=>null,'effective_url'=>null]; }
@@ -1405,11 +1505,16 @@ try {
             }
         }
         
-        // If Archive.org 403 on view_archive and parsing failed, try ZIP central directory listing via HTTP range
-        if (empty($parsed) && $isUrl && (int)($resp['status'] ?? 0) === 403 && stripos($input, 'view_archive.php') !== false) {
+        // If Archive.org view_archive is blocked (403 or "Item not available") and parsing failed, try ZIP central directory listing via HTTP range
+        $looksBlocked = false;
+        if (!empty($html)) {
+          $hl = strtolower($html);
+          if (strpos($hl, 'item not available') !== false || strpos($hl, 'http 403') !== false) { $looksBlocked = true; }
+        }
+        if (empty($parsed) && $isUrl && stripos($input, 'view_archive.php') !== false && (((int)($resp['status'] ?? 0)) === 403 || $looksBlocked)) {
           $info = archiveorg_zip_url_from_view_archive($input);
           if ($info) {
-            $zipEntries = list_zip_entries_via_http_range($info['download'], 30);
+            $zipEntries = list_zip_entries_via_http_range($info['download'], 30, $extraHeaders);
             if (!empty($zipEntries)) {
               foreach ($zipEntries as $ze) {
                 $fname = $ze['name'];
@@ -1457,6 +1562,7 @@ try {
           'link_count' => $linkCount,
           'table_count' => $tableCount,
           'password_debug' => (string)($resp['debug_password_form'] ?? ''),
+          'cookies' => $scrapeCookies !== '' ? 'provided' : '',
           'valid_extensions_count' => count($validExtensions),
           'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
           'parse_debug' => $parseDebugInfo,
@@ -1478,6 +1584,7 @@ try {
           $message .= '<br><small>HTTP ' . htmlspecialchars((string)$dbg['status']) . (!empty($dbg['error']) ? (' — ' . htmlspecialchars($dbg['error'])) : '') . '</small>';
           $message .= '<br><small class="text-info">Parsed: ' . $dbg['parsed_count'] . ' fichiers | Links: ' . $dbg['link_count'] . ' | Tables: ' . $dbg['table_count'];
           if (!empty($dbg['password_debug'])) { $message .= ' | Password: <span class="text-warning">' . htmlspecialchars($dbg['password_debug']) . '</span>'; }
+          if (!empty($dbg['cookies'])) { $message .= ' | Cookies: <span class="text-info">' . htmlspecialchars($dbg['cookies']) . '</span>'; }
           if (!empty($dbg['valid_extensions_count'])) { 
             $message .= '<br>Valid extensions: ' . $dbg['valid_extensions_count'] . ' (' . htmlspecialchars($dbg['extensions_sample']) . '...)'; 
           }
@@ -2136,6 +2243,15 @@ foreach ($images as $im) { if (!empty($im['name'])) { $imagesByName[$im['name']]
           <label class="form-label"><?php echo t('scrape.password_label'); ?></label>
           <input type="password" class="form-control" name="scrape_password" placeholder="<?php echo t('scrape.password_placeholder'); ?>">
           <div class="form-text"><?php echo t('scrape.password_help'); ?></div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label"><?php echo t('scrape.cookies_label','Cookies (optionnel)'); ?></label>
+          <textarea class="form-control" name="scrape_cookies" rows="2" placeholder="<?php echo t('scrape.cookies_placeholder','iax=...; logged-in-sig=...'); ?>"><?php echo h($_SESSION['scrape_cookies'] ?? ''); ?></textarea>
+          <div class="form-text"><?php echo t('scrape.cookies_help','Copiez l\'en-tête Cookie depuis votre navigateur si le contenu est réservé.'); ?></div>
+          <div class="form-check mt-1">
+            <input class="form-check-input" type="checkbox" name="remember_cookies" id="remember_cookies" <?php echo !empty($_SESSION['scrape_cookies']) ? 'checked' : ''; ?>>
+            <label class="form-check-label" for="remember_cookies"><?php echo t('scrape.cookies_remember','Mémoriser ce cookie pour la session'); ?></label>
+          </div>
         </div>
   <button class="btn btn-primary" type="submit"><?php echo t('btn.scrape_go','Scraper'); ?></button>
       </form>
