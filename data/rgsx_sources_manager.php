@@ -151,6 +151,20 @@ function normalize_url_like(string $u): string {
   return str_replace(' ', '%20', $u);
 }
 
+function is_torrent_url(string $url): bool {
+  $path = parse_url($url, PHP_URL_PATH);
+  return is_string($path) && preg_match('/\.torrent$/i', $path) === 1;
+}
+
+function build_torrent_source_row(string $url): array {
+  $path = parse_url($url, PHP_URL_PATH);
+  $label = is_string($path) ? urldecode(basename($path)) : '';
+  if ($label === '' || $label === '.' || $label === '..') {
+    $label = 'source.torrent';
+  }
+  return [$label, $url, 'TORRENT'];
+}
+
 // Robust HTTP fetch (cURL with fallback to file_get_contents) + debug info
 function http_fetch(string $url, int $timeout = 30, array $extraHeaders = []): array {
   $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
@@ -554,6 +568,12 @@ function slugify_folder(string $name): string {
   $s = preg_replace('/[^a-z0-9]+/', '-', $s);
   $s = trim($s, '-');
   return $s !== '' ? $s : 'system';
+}
+
+function build_platform_file_name(string $platformName): string {
+  $platformName = trim($platformName);
+  if ($platformName === '') return '';
+  return preg_match('/\.json$/i', $platformName) ? $platformName : ($platformName . '.json');
 }
 
 function get_session_images_dir(): string {
@@ -1469,6 +1489,28 @@ try {
           ];
           continue;
         }
+        if ($isUrl && is_torrent_url($input)) {
+          $parsed = [build_torrent_source_row($input)];
+          $scraped[] = ['label' => $label, 'rows' => $parsed];
+          $debugHtmls[] = [
+            'label' => $label,
+            'status' => 200,
+            'error' => '',
+            'effective_url' => $input,
+            'parsed_count' => 1,
+            'link_count' => 0,
+            'table_count' => 0,
+            'password_debug' => '',
+            'cookies' => $scrapeCookies !== '' ? 'provided' : '',
+            'valid_extensions_count' => count($validExtensions),
+            'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
+            'parse_debug' => 'Torrent manifest URL detected and stored as a single source row.',
+            'raw_sample' => '',
+            'error_log' => '',
+            'html' => ''
+          ];
+          continue;
+        }
         $usedPassword = false;
         if ($isUrl) {
           // If it's a 1fichier directory URL and a password is provided, try to unlock with POST first
@@ -1606,7 +1648,9 @@ try {
       break;
 
     case 'attach_scrape_to_platform':
+      $platform_name_post = trim($_POST['platform_name'] ?? '');
       $platform_file = trim($_POST['platform_file'] ?? '');
+      if ($platform_file === '' && $platform_name_post !== '') { $platform_file = build_platform_file_name($platform_name_post); }
       $scrape_index = (int)($_POST['scrape_index'] ?? -1);
       if ($platform_file === '' || $scrape_index < 0) { $error = t('err.missing_params'); break; }
       $batFolder = trim($_POST['batocera_folder'] ?? '');
@@ -1628,7 +1672,7 @@ try {
       }
       $_SESSION['platform_games'][$platform_file] = $unique;
       // Also attach/create an entry in systems_list using the provided name (without extension)
-      $base = pathinfo($platform_file, PATHINFO_FILENAME);
+      $base = $platform_name_post !== '' ? $platform_name_post : pathinfo($platform_file, PATHINFO_FILENAME);
       $platformName = trim($base);
       if ($platformName !== '') {
         $existsIdx = -1;
@@ -1649,7 +1693,9 @@ try {
       break;
 
     case 'attach_all_scrapes_to_platform':
+      $platform_name_post = trim($_POST['platform_name'] ?? '');
       $platform_file = trim($_POST['platform_file'] ?? '');
+      if ($platform_file === '' && $platform_name_post !== '') { $platform_file = build_platform_file_name($platform_name_post); }
       $batFolder = trim($_POST['batocera_folder'] ?? '');
       if ($platform_file === '') { $error = t('err.missing_params'); break; }
       $all = $_SESSION['last_scrape'] ?? [];
@@ -1677,7 +1723,7 @@ try {
       }
       $_SESSION['platform_games'][$platform_file] = $unique;
       // Ensure systems_list has an entry for this platform
-      $base = pathinfo($platform_file, PATHINFO_FILENAME);
+      $base = $platform_name_post !== '' ? $platform_name_post : pathinfo($platform_file, PATHINFO_FILENAME);
       $platformName = trim($base);
       if ($platformName !== '') {
         $existsIdx = -1;
@@ -2260,15 +2306,22 @@ foreach ($images as $im) { if (!empty($im['name'])) { $imagesByName[$im['name']]
       <?php if (!empty($scraped)): ?>
         <h5 class="d-flex align-items-center justify-content-between">
           <span><?php echo t('scrape.results','Résultats'); ?></span>
-          <form method="post" class="d-flex align-items-center gap-2 scrape-attach-form" onsubmit="return (function(f){if(!f.platform_file.value){alert(<?php echo json_encode(t('err.select_platform','Choisir une plateforme')); ?>);return false;} return true;})(this)")>
+          <form method="post" class="d-flex align-items-end gap-2 flex-wrap scrape-attach-form" onsubmit="return validateScrapeAttachForm(this)">
             <input type="hidden" name="action" value="attach_all_scrapes_to_platform">
             <input type="hidden" name="active_tab" value="tab-scrape">
-            <div class="input-group input-group-sm" style="min-width:320px;max-width:420px;">
-              <select class="form-select batocera-name-select" name="batocera_name" style="max-width:60%"><option value=""><?php echo t('placeholder.select_platform','Plateforme...'); ?></option></select>
-              <select class="form-select batocera-folder-select" name="batocera_folder" style="max-width:40%"><option value=""><?php echo t('placeholder.select_folder','Dossier...'); ?></option></select>
-              <input type="hidden" name="platform_file" class="platform-file-hidden" required>
-              <button class="btn btn-sm btn-primary" type="submit"><?php echo t('btn.attach_all','Ajouter tous »'); ?></button>
+            <div class="d-flex flex-column gap-1" style="min-width:320px;max-width:520px;">
+              <div class="input-group input-group-sm">
+                <select class="form-select batocera-name-select" style="max-width:60%"><option value=""><?php echo t('placeholder.select_platform','Plateforme...'); ?></option></select>
+                <select class="form-select batocera-folder-select" style="max-width:40%"><option value=""><?php echo t('placeholder.select_folder','Dossier...'); ?></option></select>
+              </div>
+              <div class="input-group input-group-sm">
+                <input class="form-control platform-name-input" name="platform_name" placeholder="<?php echo h(t('placeholder.new_platform_name','Nouvelle plateforme')); ?>" required>
+                <input class="form-control folder-input" name="batocera_folder" placeholder="<?php echo h(t('placeholder.new_folder','Nouveau dossier')); ?>" required>
+              </div>
+              <div class="form-text small"><?php echo t('scrape.attach_target_help','Choisissez une plateforme existante ou saisissez-en une nouvelle.'); ?></div>
             </div>
+            <input type="hidden" name="platform_file" class="platform-file-hidden" required>
+            <button class="btn btn-sm btn-primary" type="submit"><?php echo t('btn.attach_all','Ajouter tous »'); ?></button>
           </form>
         </h5>
         <div id="scrapeResultsBox">
@@ -2276,14 +2329,21 @@ foreach ($images as $im) { if (!empty($im['name'])) { $imagesByName[$im['name']]
           <div class="mb-3 scrape-result-block" data-rows='<?php echo h(json_encode($entry['rows'], JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE)); ?>'>
             <div class="d-flex align-items-center justify-content-between">
               <div><span class="pill"><?php echo t('scrape.source','Source'); ?></span> <?php echo h($entry['label']); ?> — <span class="small-muted"><?php printf(t('scrape.files_count','%d fichier(s)'), count($entry['rows'])); ?> | <?php echo calculate_total_size($entry['rows']); ?></span></div>
-              <form method="post" class="d-flex align-items-center gap-2 scrape-attach-form">
+              <form method="post" class="d-flex align-items-end gap-2 flex-wrap scrape-attach-form" onsubmit="return validateScrapeAttachForm(this)">
                 <input type="hidden" name="action" value="attach_scrape_to_platform">
                 <input type="hidden" name="active_tab" value="tab-scrape">
                 <input type="hidden" name="scrape_index" value="<?php echo (int)$idx; ?>">
                 <input type="hidden" class="scrape-url-source" value="<?php echo h($entry['label']); ?>">
-                <div class="input-group input-group-sm" style="min-width:320px;max-width:420px;">
-                  <select class="form-select batocera-name-select" name="batocera_name" style="max-width:60%"><option value="">Plateforme...</option></select>
-                  <select class="form-select batocera-folder-select" name="batocera_folder" style="max-width:40%"><option value="">Dossier...</option></select>
+                <div class="d-flex flex-column gap-1" style="min-width:320px;max-width:520px;">
+                  <div class="input-group input-group-sm">
+                    <select class="form-select batocera-name-select" style="max-width:60%"><option value=""><?php echo t('placeholder.select_platform','Plateforme...'); ?></option></select>
+                    <select class="form-select batocera-folder-select" style="max-width:40%"><option value=""><?php echo t('placeholder.select_folder','Dossier...'); ?></option></select>
+                  </div>
+                  <div class="input-group input-group-sm">
+                    <input class="form-control platform-name-input" name="platform_name" placeholder="<?php echo h(t('placeholder.new_platform_name','Nouvelle plateforme')); ?>" required>
+                    <input class="form-control folder-input" name="batocera_folder" placeholder="<?php echo h(t('placeholder.new_folder','Nouveau dossier')); ?>" required>
+                  </div>
+                  <div class="form-text small"><?php echo t('scrape.attach_target_help','Choisissez une plateforme existante ou saisissez-en une nouvelle.'); ?></div>
                 </div>
                 <input type="hidden" name="platform_file" class="platform-file-hidden" required>
                 <button class="btn btn-sm btn-success" type="submit"><?php echo t('btn.attach_platform','Attacher à la plateforme'); ?></button>
@@ -2302,6 +2362,26 @@ const sessionPlatforms = <?php echo json_encode(
       }, $_SESSION['systems_list'])
     : []
 ); ?>;
+
+function scrapePlatformFileName(name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) return '';
+  return /\.json$/i.test(trimmed) ? trimmed : (trimmed + '.json');
+}
+
+function validateScrapeAttachForm(form) {
+  const nameInput = form.querySelector('.platform-name-input');
+  const folderInput = form.querySelector('.folder-input');
+  const hidden = form.querySelector('.platform-file-hidden');
+  const platformName = nameInput ? nameInput.value.trim() : '';
+  const folderName = folderInput ? folderInput.value.trim() : '';
+  if (!platformName || !folderName) {
+    alert(<?php echo json_encode(t('err.fields_required','platform_name et folder requis.')); ?>);
+    return false;
+  }
+  if (hidden) hidden.value = scrapePlatformFileName(platformName);
+  return !!(hidden && hidden.value);
+}
 
 function fetchScrapeBatoceraSystems(cb) {
   if (rgsxScrapeBatoceraSystems.length) { cb && cb(); return; }
@@ -2338,6 +2418,9 @@ function fetchScrapeBatoceraSystems(cb) {
 function fillScrapeBatoceraDropdowns(form) {
   const nameSel = form.querySelector('.batocera-name-select');
   const folderSel = form.querySelector('.batocera-folder-select');
+  const nameInput = form.querySelector('.platform-name-input');
+  const folderInput = form.querySelector('.folder-input');
+  const hidden = form.querySelector('.platform-file-hidden');
   if (!nameSel || !folderSel) return;
   nameSel.innerHTML = '<option value="">'+<?php echo json_encode(t('placeholder.select_platform','Plateforme...')); ?>+'</option>';
   folderSel.innerHTML = '<option value="">'+<?php echo json_encode(t('placeholder.select_folder','Dossier...')); ?>+'</option>';
@@ -2370,25 +2453,62 @@ function fillScrapeBatoceraDropdowns(form) {
     if (best && bestScore > 0) {
       nameSel.value = best.name;
       folderSel.value = best.folder;
-      // Si hidden field présent, le remplir aussi
-      const hidden = form.querySelector('.platform-file-hidden');
-      if (hidden) hidden.value = best.name + '.json';
+      if (nameInput) nameInput.value = best.name;
+      if (folderInput) folderInput.value = best.folder;
+      if (hidden) hidden.value = scrapePlatformFileName(best.name);
     }
   }
 }
 function setupScrapeBatoceraAttachSync(form) {
   const nameSel = form.querySelector('.batocera-name-select');
   const folderSel = form.querySelector('.batocera-folder-select');
+  const nameInput = form.querySelector('.platform-name-input');
+  const folderInput = form.querySelector('.folder-input');
   const hidden = form.querySelector('.platform-file-hidden');
-  if (!nameSel || !folderSel || !hidden) return;
+  if (!nameSel || !folderSel || !hidden || !nameInput || !folderInput) return;
+
+  const syncHidden = function() {
+    hidden.value = scrapePlatformFileName(nameInput.value);
+  };
+
+  const syncSelectsFromManual = function() {
+    const nameVal = nameInput.value.trim().toLowerCase();
+    const folderVal = folderInput.value.trim().toLowerCase();
+    const byName = nameVal ? rgsxScrapeBatoceraSystems.find(s => (s.name || '').trim().toLowerCase() === nameVal) : null;
+    const byFolder = folderVal ? rgsxScrapeBatoceraSystems.find(s => (s.folder || '').trim().toLowerCase() === folderVal) : null;
+    const sys = byName || byFolder;
+    if (sys) {
+      nameSel.value = sys.name;
+      folderSel.value = sys.folder;
+      if (byName && !folderInput.value.trim()) folderInput.value = sys.folder;
+      if (byFolder && !nameInput.value.trim()) nameInput.value = sys.name;
+    } else {
+      if (!byName) nameSel.value = '';
+      if (!byFolder) folderSel.value = '';
+    }
+    syncHidden();
+  };
+
   nameSel.addEventListener('change', function() {
     const sys = rgsxScrapeBatoceraSystems.find(s => s.name === nameSel.value);
-    if (sys) { folderSel.value = sys.folder; hidden.value = sys.name + '.json'; }
+    if (sys) {
+      folderSel.value = sys.folder;
+      nameInput.value = sys.name;
+      folderInput.value = sys.folder;
+      syncHidden();
+    }
   });
   folderSel.addEventListener('change', function() {
     const sys = rgsxScrapeBatoceraSystems.find(s => s.folder === folderSel.value);
-    if (sys) { nameSel.value = sys.name; hidden.value = sys.name + '.json'; }
+    if (sys) {
+      nameSel.value = sys.name;
+      nameInput.value = sys.name;
+      folderInput.value = sys.folder;
+      syncHidden();
+    }
   });
+  nameInput.addEventListener('input', syncSelectsFromManual);
+  folderInput.addEventListener('input', syncSelectsFromManual);
 }
 document.addEventListener('DOMContentLoaded', function() {
   fetchScrapeBatoceraSystems(function() {
