@@ -41,7 +41,15 @@ function t(string $key, string $fallback = ''): string {
 
 // -------------- Utilities & Shared -----------------
 function is_url($str) { return filter_var($str, FILTER_VALIDATE_URL); }
-function is_html_block($str) { return preg_match('/<(tr|table|html|body|pre)[\s>]/i', $str); }
+function is_html_block($str) { return preg_match('/<!doctype|<(tr|table|html|body|pre|main|ul|li|div)[\s>]/i', $str); }
+function build_scrape_input_label(string $input, int $index, bool $isHtml): string {
+  if (!$isHtml) return $input !== '' ? $input : ('Entree #' . ($index + 1));
+  if (preg_match('/<title[^>]*>(.*?)<\/title>/is', $input, $m)) {
+    $title = trim(html_entity_decode(strip_tags($m[1]), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+    if ($title !== '') return 'HTML: ' . $title;
+  }
+  return 'HTML colle #' . ($index + 1);
+}
 function format_bytes($bytes) {
     if (!is_numeric($bytes)) return $bytes;
     $bytes = (float)$bytes;
@@ -302,6 +310,32 @@ function http_fetch(string $url, int $timeout = 30, array $extraHeaders = []): a
         }
       }
     }
+    // Detect Cloudflare challenge and retry with system curl.exe (better TLS fingerprint)
+    if ($body !== '' && (stripos($body, 'Just a moment') !== false || stripos($body, 'cf_chl_opt') !== false || stripos($body, 'challenge-platform') !== false)) {
+      $isWin = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN' || (defined('PHP_OS_FAMILY') && PHP_OS_FAMILY === 'Windows');
+      $curlExe = $isWin ? (is_file('C:\\Windows\\System32\\curl.exe') ? 'C:\\Windows\\System32\\curl.exe' : 'curl.exe') : 'curl';
+      $cmdParts = [$curlExe, '-s', '-L', '--max-time', (string)$timeout, '-H', 'User-Agent: ' . $ua,
+        '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        '-H', 'Accept-Language: en-US,en;q=0.8',
+        '-H', 'Cache-Control: no-cache',
+        '-H', 'Connection: keep-alive',
+        '-H', 'Upgrade-Insecure-Requests: 1'];
+      if (!empty($extraHeaders)) {
+        foreach ($extraHeaders as $eh) { $cmdParts[] = '-H'; $cmdParts[] = $eh; }
+      }
+      $cmdParts[] = $url;
+      $cmd = implode(' ', array_map('escapeshellarg', $cmdParts));
+      $curlBody = @shell_exec($cmd);
+      if ($curlBody !== null && $curlBody !== '' && stripos($curlBody, 'cf_chl_opt') === false && stripos($curlBody, 'Just a moment') === false) {
+        return [
+          'ok' => true,
+          'status' => 200,
+          'body' => $curlBody,
+          'error' => null,
+          'effective_url' => $url
+        ];
+      }
+    }
     return [
       'ok' => $ok,
       'status' => $code,
@@ -432,6 +466,32 @@ function http_fetch(string $url, int $timeout = 30, array $extraHeaders = []): a
           'effective_url' => $rebuilt
         ];
       }
+    }
+  }
+  // Detect Cloudflare challenge in file_get_contents response → retry with system curl.exe
+  if ($body !== '' && (stripos($body, 'Just a moment') !== false || stripos($body, 'cf_chl_opt') !== false || stripos($body, 'challenge-platform') !== false)) {
+    $isWin = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN' || (defined('PHP_OS_FAMILY') && PHP_OS_FAMILY === 'Windows');
+    $curlBin = $isWin ? (is_file('C:\\Windows\\System32\\curl.exe') ? 'C:\\Windows\\System32\\curl.exe' : 'curl.exe') : 'curl';
+    $cmdParts = [$curlBin, '-s', '-L', '--max-time', (string)$timeout, '-H', 'User-Agent: ' . $ua,
+      '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      '-H', 'Accept-Language: en-US,en;q=0.8',
+      '-H', 'Cache-Control: no-cache',
+      '-H', 'Connection: keep-alive',
+      '-H', 'Upgrade-Insecure-Requests: 1'];
+    if (!empty($extraHeaders)) {
+      foreach ($extraHeaders as $eh) { $cmdParts[] = '-H'; $cmdParts[] = $eh; }
+    }
+    $cmdParts[] = $url;
+    $cmd = implode(' ', array_map('escapeshellarg', $cmdParts));
+    $curlBody = @shell_exec($cmd);
+    if ($curlBody !== null && $curlBody !== '' && stripos($curlBody, 'cf_chl_opt') === false && stripos($curlBody, 'Just a moment') === false) {
+      return [
+        'ok' => true,
+        'status' => 200,
+        'body' => $curlBody,
+        'error' => null,
+        'effective_url' => $url
+      ];
     }
   }
   return [
@@ -1023,6 +1083,43 @@ function parse_classic_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validE
     }
     return $result;
 }
+function parse_lolroms($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  $result = [];
+  $lis = $dom->getElementsByTagName('li');
+  foreach ($lis as $li) {
+    $cls = (string)$li->getAttribute('class');
+    if (stripos($cls, 'file-item') === false) continue;
+    $a = $li->getElementsByTagName('a')->item(0);
+    if (!$a) continue;
+    $href = $a->getAttribute('href');
+    if ($href === '') continue;
+    // Extract filename from href (URL decoded basename preserves proper casing)
+    $path = parse_url($href, PHP_URL_PATH);
+    $fileName = $path ? urldecode(basename($path)) : trim($a->textContent);
+    if ($fileName === '' || substr($fileName, -1) === '/') continue;
+    $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+    if (!in_array($ext, $validExtensions)) continue;
+    if ($isUrl) {
+      $fullUrl = resolve_url($urlOrFragment, $href);
+    } elseif (preg_match('#^/#', $href)) {
+      // Pasted HTML: resolve relative paths against lolroms.com
+      $fullUrl = 'https://lolroms.com' . $href;
+    } else {
+      $fullUrl = $href;
+    }
+    // Extract file size from span.file-size
+    $fileSize = '';
+    $spans = $li->getElementsByTagName('span');
+    foreach ($spans as $span) {
+      if (stripos((string)$span->getAttribute('class'), 'file-size') !== false) {
+        $fileSize = trim($span->textContent);
+        break;
+      }
+    }
+    $result[] = [$fileName, $fullUrl, $fileSize];
+  }
+  return $result;
+}
 function parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
   $out = [];
   foreach ($dom->getElementsByTagName('a') as $a) {
@@ -1323,6 +1420,18 @@ function parse_auto($html, $sourceLabel, $isUrl, $urlOrFragment, $validExtension
   }
     if ($has1fichier) return parse_1fichier_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
     if ($hasClassic)  return parse_classic_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+  // Check for lolroms-style file-list (ul.file-list > li.file-item)
+  $hasLolroms = false;
+  foreach ($dom->getElementsByTagName('ul') as $ul) {
+    if (stripos((string)$ul->getAttribute('class'), 'file-list') !== false) {
+      $hasLolroms = true;
+      break;
+    }
+  }
+  if ($hasLolroms) {
+    $lolRes = parse_lolroms($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($lolRes) return $lolRes;
+  }
   // Last resort: generic link scan
   $g = parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
   return $g;
@@ -1456,6 +1565,10 @@ try {
       $validExtensions = array_values(array_intersect($exts, $allowedExtensions));
       if (!$urls) { $error = 'Entrée vide.'; break; }
       if (!$validExtensions) { $error = 'Aucune extension valide.'; break; }
+      // Detect URL-encoded HTML (e.g. %20 instead of spaces from browser copy) and decode it
+      if (strpos($urls, '%20') !== false && preg_match('/<[a-zA-Z]/', urldecode($urls))) {
+        $urls = urldecode($urls);
+      }
       $inputs = [];
       if (is_html_block($urls)) { $inputs = [$urls]; }
       else { $inputs = array_filter(array_map('trim', preg_split('/[\n,]+/', $urls))); }
@@ -1467,17 +1580,20 @@ try {
         if (!preg_match('#^https?://#i', $line)) {
           if (preg_match('#^(?:www\.)?archive\.org/#i', $line)) return 'https://' . $line;
           if (preg_match('#^ia\d+\.(?:us\.)?archive\.org/#i', $line)) return 'https://' . $line;
+          if (preg_match('#^(?:www\.)?lolroms\.com/#i', $line)) return 'https://' . $line;
         }
         return $line;
       }, $inputs);
       $scraped = [];
       $debugHtmls = [];
-      // Apply URL encoding normalization to inputs (handles spaces in paths/queries)
-      $inputs = array_map('normalize_url_like', $inputs);
+      // Apply URL normalization only to actual URLs, never to pasted HTML blocks.
+      $inputs = array_map(function($line) {
+        return is_html_block($line) ? $line : normalize_url_like($line);
+      }, $inputs);
       foreach ($inputs as $index => $input) {
         $isUrl = is_url($input);
         $isHtml = !$isUrl && is_html_block($input);
-        $label = $input !== '' ? $input : ('Entrée #' . ($index+1));
+        $label = build_scrape_input_label($input, $index, $isHtml);
         if (!$isUrl && !$isHtml) {
           // Enregistrer un debug pour les lignes ignorées
           $debugHtmls[] = [
@@ -1524,6 +1640,28 @@ try {
             $resp = http_fetch($input, 30, $extraHeaders);
           }
           $html = (string)($resp['body'] ?? '');
+          // Detect Cloudflare challenge page (JS challenge / managed challenge)
+          if ($html !== '' && (stripos($html, 'Just a moment') !== false || stripos($html, 'cf_chl_opt') !== false || stripos($html, 'challenge-platform') !== false)) {
+            $cfHost = $host ?: parse_url($input, PHP_URL_HOST);
+            $debugHtmls[] = [
+              'label' => $label,
+              'status' => (int)($resp['status'] ?? 0),
+              'error' => "Cloudflare challenge detected for $cfHost. Open the page in your browser, then Ctrl+U to view source, copy all, and paste it in the URLs field.",
+              'effective_url' => $resp['effective_url'] ?? $input,
+              'parsed_count' => 0,
+              'link_count' => 0,
+              'table_count' => 0,
+              'password_debug' => '',
+              'cookies' => $scrapeCookies !== '' ? 'provided' : '',
+              'valid_extensions_count' => 0,
+              'extensions_sample' => '',
+              'parse_debug' => 'Cloudflare JS challenge — system curl.exe fallback also failed.',
+              'raw_sample' => '',
+              'error_log' => '',
+              'html' => substr($html, 0, 2000)
+            ];
+            continue;
+          }
         } else { $html = $input; $resp = ['ok'=>true,'status'=>200,'error'=>null,'effective_url'=>null]; }
         // Base URL for parsing (handle redirects/fallbacks)
         $baseForParse = $isUrl ? ((string)($resp['effective_url'] ?? $input) ?: $input) : '';
@@ -2292,8 +2430,8 @@ foreach ($images as $im) { if (!empty($im['name'])) { $imagesByName[$im['name']]
         </div>
         <div class="mb-2">
           <label class="form-label"><?php echo t('scrape.cookies_label','Cookies (optionnel)'); ?></label>
-          <textarea class="form-control" name="scrape_cookies" rows="2" placeholder="<?php echo t('scrape.cookies_placeholder','iax=...; logged-in-sig=...'); ?>"><?php echo h($_SESSION['scrape_cookies'] ?? ''); ?></textarea>
-          <div class="form-text"><?php echo t('scrape.cookies_help','Copiez l\'en-tête Cookie depuis votre navigateur si le contenu est réservé.'); ?></div>
+          <textarea class="form-control" name="scrape_cookies" rows="2" placeholder="<?php echo t('scrape.cookies_placeholder','cf_clearance=...; iax=...; logged-in-sig=...'); ?>"><?php echo h($_SESSION['scrape_cookies'] ?? ''); ?></textarea>
+          <div class="form-text"><?php echo t('scrape.cookies_help','Copiez l\'en-tête Cookie depuis votre navigateur si le contenu est réservé. Pour les sites protégés par Cloudflare (lolroms.com…), copiez le cookie cf_clearance.'); ?></div>
           <div class="form-check mt-1">
             <input class="form-check-input" type="checkbox" name="remember_cookies" id="remember_cookies" <?php echo !empty($_SESSION['scrape_cookies']) ? 'checked' : ''; ?>>
             <label class="form-check-label" for="remember_cookies"><?php echo t('scrape.cookies_remember','Mémoriser ce cookie pour la session'); ?></label>

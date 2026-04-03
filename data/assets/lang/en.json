@@ -86,7 +86,7 @@
   ,"scrape.import_label": "Import DATA ZIP (file or URL)"
   ,"scrape.expected_content": "Expected content: systems_list.json, games/*.json, images/*"
   ,"scrape.urls_placeholder": "Paste URLs (1fichier / archive.org / torrent)"
-  ,"scrape.supported": "Supported: https://archive.org/download/*, https://1fichier.com/?*, direct .torrent links."
+  ,"scrape.supported": "Supported: https://archive.org/download/*, https://1fichier.com/?*, https://lolroms.com/*, direct .torrent links."
   ,"scrape.password_label": "Password (1fichier - optional)"
   ,"scrape.password_placeholder": "Leave empty if not needed"
   ,"scrape.password_help": "If the 1fichier URL is a protected folder the password will unlock the page ([PW] in debug)."
