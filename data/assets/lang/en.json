@@ -30,10 +30,12 @@
   "btn.use_official_base": "Use official RGSX base",
   "btn.load": "Load",
   "btn.scrape_go": "Scrape",
-  "btn.attach_platform": "Attach to platform",
+  "btn.attach_platform": "ADD TO PLATFORM",
+  "btn.attach_platform_replace": "REPLACE EXISTING LINKS",
 
   "confirm.clear_platforms": "Clear all platforms?",
   "confirm.clear_games": "Clear all games from every platform?",
+  "confirm.attach_replace": "Replace the existing games in this platform with this selection?",
   "confirm.delete_entry": "Delete this entry?",
   "confirm.delete_platform": "Delete this platform from the list?",
   "confirm.delete_row": "Delete this row?",
@@ -48,6 +50,7 @@
   "msg.systems.updated": "Platform updated.",
   "msg.systems.deleted": "Deleted.",
   "msg.games.attached": "Games attached to %s",
+  "msg.games.replaced": "Games replaced for %s",
   "msg.games.loaded_platforms": "Platform(s) loaded: %d",
   "msg.games.row_added": "Row added.",
   "msg.games.row_updated": "Row updated.",
@@ -89,17 +92,23 @@
   ,"scrape.supported": "Supported: https://archive.org/download/*, https://1fichier.com/?*, https://lolroms.com/*, direct .torrent links."
   ,"scrape.password_label": "Password (1fichier - optional)"
   ,"scrape.password_placeholder": "Leave empty if not needed"
-  ,"scrape.password_help": "If the 1fichier URL is a protected folder the password will unlock the page ([PW] in debug)."
-  ,"btn.attach_all": "Add all »"
+  ,"scrape.password_help": "If the 1fichier URL is a protected folder, the typed password takes priority. Otherwise the scraper automatically tries `assets/pwd.json` ([PW] in debug)."
+  ,"btn.attach_all": "ADD ALL"
+  ,"btn.attach_all_replace": "REPLACE ALL"
   ,"scrape.results": "Results"
+  ,"scrape.total_links_label": "Total links"
+  ,"scrape.total_size_label": "Total size"
   ,"scrape.source": "Source"
   ,"scrape.files_count": "%d file(s)"
   ,"scrape.urls_label": "URLs or HTML"
   ,"placeholder.select_platform": "Platform..."
   ,"placeholder.select_folder": "Folder..."
+  ,"placeholder.platform_image_existing": "Select an existing image..."
   ,"placeholder.new_platform_name": "New platform"
   ,"placeholder.new_folder": "New folder"
   ,"scrape.attach_target_help": "Choose an existing platform or type a new one."
+  ,"scrape.attach_all_title": "Add all links in the same platform"
+  ,"scrape.attach_single_title": "Choose a platform for current link"
   ,"label.games": "Games"
   ,"label.actions": "Actions"
   ,"btn.add_game": "Add a game"

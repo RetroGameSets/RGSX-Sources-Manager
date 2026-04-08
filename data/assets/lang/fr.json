@@ -31,10 +31,12 @@
   "btn.use_official_base": "Utiliser base RGSX officielle",
   "btn.load": "Charger",
   "btn.scrape_go": "Scraper",
-  "btn.attach_platform": "Attacher à la plateforme",
+  "btn.attach_platform": "ADD TO PLATFORM",
+  "btn.attach_platform_replace": "REPLACE EXISTING LINKS",
 
   "confirm.clear_platforms": "Vider toutes les plateformes ?",
   "confirm.clear_games": "Vider tous les jeux de toutes les plateformes ?",
+  "confirm.attach_replace": "Remplacer les jeux existants de cette plateforme par cette sélection ?",
   "confirm.delete_entry": "Supprimer cette entrée ?",
   "confirm.delete_platform": "Supprimer cette plateforme de la liste ?",
   "confirm.delete_row": "Supprimer cette ligne ?",
@@ -49,6 +51,7 @@
   "msg.systems.updated": "Plateforme mise à jour.",
   "msg.systems.deleted": "Supprimé.",
   "msg.games.attached": "Jeux attachés à %s",
+  "msg.games.replaced": "Jeux remplacés pour %s",
   "msg.games.loaded_platforms": "Plateforme(s) chargée(s): %d",
   "msg.games.row_added": "Ligne ajoutée.",
   "msg.games.row_updated": "Ligne mise à jour.",
@@ -90,17 +93,23 @@
   ,"scrape.supported": "Supporté: https://archive.org/download/*, https://1fichier.com/?*, https://lolroms.com/*, liens .torrent directs."
   ,"scrape.password_label": "Mot de passe (1fichier - optionnel)"
   ,"scrape.password_placeholder": "Laisser vide si non nécessaire"
-  ,"scrape.password_help": "Si l'URL 1fichier est un dossier protégé, le mot de passe sera utilisé pour déverrouiller la page ([PW] dans le debug)."
-  ,"btn.attach_all": "Ajouter tous »"
+  ,"scrape.password_help": "Si l'URL 1fichier est un dossier protégé, le mot de passe saisi est prioritaire. Sinon, le scraper essaie automatiquement `assets/pwd.json` ([PW] dans le debug)."
+  ,"btn.attach_all": "ADD ALL"
+  ,"btn.attach_all_replace": "REPLACE ALL"
   ,"scrape.results": "Résultats"
+  ,"scrape.total_links_label": "Total liens"
+  ,"scrape.total_size_label": "Taille totale"
   ,"scrape.source": "Source"
   ,"scrape.files_count": "%d fichier(s)"
   ,"scrape.urls_label": "URLs ou HTML"
   ,"placeholder.select_platform": "Plateforme..."
   ,"placeholder.select_folder": "Dossier..."
+  ,"placeholder.platform_image_existing": "Choisir une image existante..."
   ,"placeholder.new_platform_name": "Nouvelle plateforme"
   ,"placeholder.new_folder": "Nouveau dossier"
   ,"scrape.attach_target_help": "Choisissez une plateforme existante ou saisissez-en une nouvelle."
+  ,"scrape.attach_all_title": "Add all links in the same platform"
+  ,"scrape.attach_single_title": "Choose a platform for current link"
   ,"label.games": "Jeux"
   ,"label.actions": "Actions"
   ,"btn.add_game": "Ajouter un jeu"
