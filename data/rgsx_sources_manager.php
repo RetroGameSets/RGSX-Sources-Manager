@@ -1569,10 +1569,69 @@ function guess_mime_from_ext(string $name): string {
   return $map[$ext] ?? 'application/octet-stream';
 }
 
-// Resolve relative/absolute href against a base URL
-function resolve_url(string $base, string $href): string {
-  if ($href === '') return $base;
-  if (preg_match('#^https?://#i', $href)) return $href;
+// Group vimm.net results by platform to show consolidated tables
+function group_vimm_results(array $scraped): array {
+  $grouped = [];
+  $vimmGroups = [];
+  
+  foreach ($scraped as $entry) {
+    $label = $entry['label'];
+    $rows = $entry['rows'];
+    
+    // Check if this is a vimm.net URL
+    if (preg_match('#^https?://vimm\.net/vault/([^/]+)/([A-Z])$#i', $label, $matches)) {
+      $platform = $matches[1];
+      $letter = $matches[2];
+      
+      // Group by platform
+      if (!isset($vimmGroups[$platform])) {
+        $vimmGroups[$platform] = [
+          'label' => "vimm.net - $platform (A-Z)",
+          'rows' => []
+        ];
+      }
+      
+      // Add all rows from this letter to the platform group
+      $vimmGroups[$platform]['rows'] = array_merge($vimmGroups[$platform]['rows'], $rows);
+    } else {
+      // Non-vimm results go to regular grouped array
+      $grouped[] = $entry;
+    }
+  }
+  
+  // Add grouped vimm results
+  foreach ($vimmGroups as $platformGroup) {
+    $grouped[] = $platformGroup;
+  }
+  
+  return $grouped;
+}
+
+// Expand vimm.net platform URLs to all letter URLs from A to Z and number section
+function expand_vimm_platform_url(string $url): array {
+  // Check if it's a vimm.net vault platform URL like https://vimm.net/vault/Atari2600
+  if (!preg_match('#^https?://vimm\.net/vault/([^/?]+)$#i', $url, $matches)) {
+    return [$url]; // Not a vimm platform URL, return as is
+  }
+
+  $platform = $matches[1];
+  $baseUrl = "https://vimm.net/vault/$platform";
+
+  // All possible letters from A to Z
+  $letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
+
+  $letterUrls = [];
+  foreach ($letters as $letter) {
+    $letterUrls[] = $baseUrl . '/' . $letter;
+  }
+
+  // Add number section URL
+  $numberUrl = "https://vimm.net/vault/?p=list&system=$platform&section=number";
+  $letterUrls[] = $numberUrl;
+
+  rgsx_debug_log('vimm_platform_expanded', ['platform' => $platform, 'letter_urls_count' => count($letterUrls)]);
+
+  return $letterUrls;
   if (strpos($href, '//') === 0) return 'https:' . $href;
   $bp = @parse_url($base);
   if (!$bp || empty($bp['scheme']) || empty($bp['host'])) {
@@ -2022,6 +2081,59 @@ function parse_lolroms($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensi
   }
   return $result;
 }
+function parse_vimm_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  $result = [];
+  
+  // Check if this is an individual game page (URL ends with a number)
+  if (preg_match('#^https?://vimm\.net/vault/(\d+)$#i', $urlOrFragment, $matches)) {
+    // Individual game page - extract title and download URL
+    $gameId = $matches[1];
+    
+    // Try to find the title in the page
+    $title = '';
+    $h1s = $dom->getElementsByTagName('h1');
+    if ($h1s->length > 0) {
+      $title = trim($h1s->item(0)->textContent);
+    }
+    
+    // If no h1, try title tag
+    if ($title === '') {
+      $titles = $dom->getElementsByTagName('title');
+      if ($titles->length > 0) {
+        $title = trim($titles->item(0)->textContent);
+        // Remove "The Vault: " prefix if present
+        $title = preg_replace('/^The Vault:\s*/i', '', $title);
+      }
+    }
+    
+    if ($title !== '') {
+      // Sanitize filename
+      $fileName = preg_replace('/[^A-Za-z0-9\-_\.]/', '_', $title) . '.zip';
+      // The download URL is the same as the current URL
+      $result[] = [$fileName, $urlOrFragment, ''];
+    }
+    
+    return $result;
+  }
+  
+  // Letter page or number page - find all links to /vault/XXXXX (game pages)
+  foreach ($dom->getElementsByTagName('a') as $a) {
+    $href = $a->getAttribute('href');
+    if (preg_match('#^/vault/(\d+)$#', $href, $matches)) {
+      $gameId = $matches[1];
+      $gameTitle = trim($a->textContent);
+      if ($gameTitle === '') continue;
+      
+      // Create a filename from the title (sanitize it)
+      $fileName = preg_replace('/[^A-Za-z0-9\-_\.]/', '_', $gameTitle) . '.zip';
+      $fullUrl = 'https://vimm.net' . $href;
+      
+      // For vimm.net, we don't have file size, so leave it empty
+      $result[] = [$fileName, $fullUrl, ''];
+    }
+  }
+  return $result;
+}
 function parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
   $out = [];
   foreach ($dom->getElementsByTagName('a') as $a) {
@@ -2334,6 +2446,15 @@ function parse_auto($html, $sourceLabel, $isUrl, $urlOrFragment, $validExtension
     $lolRes = parse_lolroms($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
     if ($lolRes) return $lolRes;
   }
+  // Check for vimm.net vault pages (both letter pages and individual game pages)
+  $hasVimm = false;
+  if ($isUrl && preg_match('#^https?://vimm\.net/vault/#i', $urlOrFragment)) {
+    $hasVimm = true;
+  }
+  if ($hasVimm) {
+    $vimmRes = parse_vimm_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($vimmRes) return $vimmRes;
+  }
   // Last resort: generic link scan
   $g = parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
   return $g;
@@ -2496,6 +2617,12 @@ try {
         }
         return $line;
       }, $inputs);
+      // Expand vimm.net platform URLs to all games from # to Z
+      $expandedInputs = [];
+      foreach ($inputs as $input) {
+        $expandedInputs = array_merge($expandedInputs, expand_vimm_platform_url($input));
+      }
+      $inputs = $expandedInputs;
       $scraped = [];
       $debugHtmls = [];
       // Apply URL normalization only to actual URLs, never to pasted HTML blocks.
@@ -2667,7 +2794,7 @@ try {
           'html' => substr($html, 0, 8000) // Augmenté pour mieux diagnostiquer 1fichier
         ];
       }
-      $_SESSION['last_scrape'] = $scraped;
+      $_SESSION['last_scrape'] = group_vimm_results($scraped);
       $message = 'Scraping terminé.';
       // Toujours afficher un bloc Debug dans ce mode pour faciliter le diagnostic
       $message .= '<details><summary>Debug HTML</summary>';
@@ -3661,9 +3788,9 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
   <?php if ($error): ?><div class="alert alert-danger"><?php echo h($error); ?></div><?php endif; ?>
 
   <ul class="nav nav-tabs" id="tabs" role="tablist">
-    <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-scrape'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-scrape" type="button">1) <?php echo t('tab.scrape','Scraper'); ?></button></li>
-    <li class="nav-item" role="presentation"><button class="nav-link <?php echo ($activeTab==='tab-systems' || $activeTab==='tab-games')?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-systems" type="button">2) <?php echo t('tab.systems','Plateformes & Jeux'); ?></button></li>
-    <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-package'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-package" type="button">3) <?php echo t('tab.package','Package ZIP'); ?></button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-scrape'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-scrape" type="button" role="tab" aria-selected="<?php echo $activeTab==='tab-scrape'?'true':'false'; ?>">1) <?php echo t('tab.scrape','Scraper'); ?></button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link <?php echo ($activeTab==='tab-systems' || $activeTab==='tab-games')?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-systems" type="button" role="tab" aria-selected="<?php echo ($activeTab==='tab-systems' || $activeTab==='tab-games')?'true':'false'; ?>">2) <?php echo t('tab.systems','Plateformes & Jeux'); ?></button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-package'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-package" type="button" role="tab" aria-selected="<?php echo $activeTab==='tab-package'?'true':'false'; ?>">3) <?php echo t('tab.package','Package ZIP'); ?></button></li>
   </ul>
 
   <div class="tab-content border border-top-0 p-3">
@@ -4712,10 +4839,16 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
             btn.classList.add('active');
             btn.setAttribute('aria-selected', 'true');
           }
-          // Switch panes
-          document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('show','active'));
+          // Switch panes - hide all first
+          document.querySelectorAll('.tab-pane').forEach(p => {
+            p.classList.remove('show','active');
+            p.style.display = 'none'; // Force hide
+          });
           const pane = document.querySelector(targetSel);
-          if (pane) pane.classList.add('show','active');
+          if (pane) {
+            pane.classList.add('show','active');
+            pane.style.display = 'block'; // Force show
+          }
         } catch (_) { /* noop */ }
       };
       // Delegate on the tabs container to be extra-resilient
@@ -4724,7 +4857,8 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
         tabsBar.addEventListener('click', (e) => {
           const btn = e.target.closest('[data-bs-toggle="tab"][data-bs-target]');
           if (!btn) return;
-          e.preventDefault();
+          e.preventDefault(); // Prevent any default link behavior
+          e.stopPropagation(); // Stop event bubbling
           const target = btn.getAttribute('data-bs-target');
           if (!target) return;
           show();
@@ -4737,6 +4871,30 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
           setTimeout(hide, 150);
         });
       }
+      
+      // Initialize tabs on page load
+      const initTabs = () => {
+        try {
+          // Hide all panes first
+          document.querySelectorAll('.tab-pane').forEach(p => {
+            p.style.display = 'none';
+            p.classList.remove('show', 'active');
+          });
+          // Show active pane
+          const activeBtn = document.querySelector('[data-bs-toggle="tab"].active');
+          if (activeBtn) {
+            const target = activeBtn.getAttribute('data-bs-target');
+            const pane = document.querySelector(target);
+            if (pane) {
+              pane.style.display = 'block';
+              pane.classList.add('show', 'active');
+            }
+          }
+        } catch (_) { /* noop */ }
+      };
+      
+      // Run initialization
+      initTabs();
       // Also listen to Bootstrap event (if present) purely to hide overlay on heavy tabs
       document.addEventListener('shown.bs.tab', (ev) => {
         const target = ev.target && ev.target.getAttribute ? ev.target.getAttribute('data-bs-target') : '';
