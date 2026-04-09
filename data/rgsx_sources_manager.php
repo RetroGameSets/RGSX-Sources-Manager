@@ -972,7 +972,7 @@ function http_fetch(string $url, int $timeout = 30, array $extraHeaders = []): a
       $err = $resp === false ? curl_error($ch) : null;
       $errno = curl_errno($ch);
       $info = curl_getinfo($ch);
-      curl_close($ch);
+      unset($ch);
       if ($resp === false) {
         return [false, 0, '', $err, $info, ''];
       }
@@ -1331,7 +1331,7 @@ function http_fetch_1fichier_with_password(string $url, string $password, int $t
       $resp = curl_exec($ch);
       $err = $resp === false ? curl_error($ch) : null;
       $info = curl_getinfo($ch);
-      curl_close($ch);
+      unset($ch);
       if ($resp === false) return [false, 0, '', $err, $info, ''];
       $hsz = (int)($info['header_size'] ?? 0);
       $headersTxt = $hsz > 0 ? substr($resp, 0, $hsz) : '';
@@ -1632,6 +1632,9 @@ function expand_vimm_platform_url(string $url): array {
   rgsx_debug_log('vimm_platform_expanded', ['platform' => $platform, 'letter_urls_count' => count($letterUrls)]);
 
   return $letterUrls;
+}
+
+function resolve_url(string $base, string $href): string {
   if (strpos($href, '//') === 0) return 'https:' . $href;
   $bp = @parse_url($base);
   if (!$bp || empty($bp['scheme']) || empty($bp['host'])) {
@@ -1686,7 +1689,7 @@ function http_fetch_range(string $url, string $rangeSpec, int $timeout = 30, arr
     $resp = curl_exec($ch);
     $err = $resp === false ? curl_error($ch) : null;
     $info = curl_getinfo($ch);
-    curl_close($ch);
+    unset($ch);
     if ($resp === false) return ['ok'=>false,'status'=>0,'body'=>'','error'=>$err,'headers'=>[]];
     $hsz = (int)($info['header_size'] ?? 0);
     $headersTxt = $hsz > 0 ? substr($resp, 0, $hsz) : '';
@@ -2805,7 +2808,7 @@ try {
           $message .= '<div style="margin-bottom:6px"><b>' . htmlspecialchars($dbg['label']) . '</b>';
           if (!empty($dbg['effective_url'])) { $message .= ' <small class="text-muted">(' . htmlspecialchars($dbg['effective_url']) . ')</small>'; }
           $message .= '<br><small>HTTP ' . htmlspecialchars((string)$dbg['status']) . (!empty($dbg['error']) ? (' — ' . htmlspecialchars($dbg['error'])) : '') . '</small>';
-          $message .= '<br><small class="text-info">Parsed: ' . $dbg['parsed_count'] . ' fichiers | Links: ' . $dbg['link_count'] . ' | Tables: ' . $dbg['table_count'];
+          $message .= '<br><small class="text-info">Parsed: ' . (int)($dbg['parsed_count'] ?? 0) . ' fichiers | Links: ' . (int)($dbg['link_count'] ?? 0) . ' | Tables: ' . (int)($dbg['table_count'] ?? 0);
           if (!empty($dbg['password_debug'])) { $message .= ' | Password: <span class="text-warning">' . htmlspecialchars($dbg['password_debug']) . '</span>'; }
           if (!empty($dbg['cookies'])) { $message .= ' | Cookies: <span class="text-info">' . htmlspecialchars($dbg['cookies']) . '</span>'; }
           if (!empty($dbg['valid_extensions_count'])) { 
@@ -3895,7 +3898,6 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
             <div class="scrape-source-summary">
               <div><span class="pill"><?php echo t('scrape.source','Source'); ?></span> <?php echo h($entry['label']); ?></div>
               <div class="scrape-source-details"><?php printf(t('scrape.files_count','%d fichier(s)'), count($entry['rows'])); ?> | <?php echo calculate_total_size($entry['rows']); ?></div>
-            </div>
             </div>
             <pre class="scrape-rows-json"><?php echo h(json_encode($entry['rows'], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE)); ?></pre>
             <form method="post" class="scrape-target-card scrape-attach-form" onsubmit="return validateScrapeAttachForm(this)" enctype="multipart/form-data">
