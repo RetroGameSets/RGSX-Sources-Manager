@@ -137,7 +137,7 @@ function t(string $key, string $fallback = ''): string {
 }
 
 // Unified RGSX Sources Manager
-// - Scrape (1fichier / Myrient / Archive.org) to create platform game JSONs
+// - Scrape (1fichier / Myrient / Archive.org / EdgeEmu.net) to create platform game JSONs
 // - Create/Edit systems_list.json (from scratch or upload)
 // - Create/Edit per-platform games JSON
 // - Package ZIP: systems_list.json + images/ + games/
@@ -221,6 +221,48 @@ function calculate_total_size($rows) {
     }
     
     return $result;
+}
+
+// Parse pasted direct row format, e.g. "name|title_id|url" or "name|url".
+function parse_piped_source_row(string $line, array $validExtensions): ?array {
+  $line = trim($line);
+  if ($line === '' || strpos($line, '|') === false) {
+    return null;
+  }
+
+  $parts = array_map('trim', explode('|', $line));
+  if (count($parts) < 2) {
+    return null;
+  }
+
+  $name = '';
+  $url = '';
+  $size = '';
+
+  if (count($parts) >= 3) {
+    // Common expected format: name|title_id|url
+    $name = (string)$parts[0];
+    $url = (string)$parts[2];
+    if (count($parts) >= 4) {
+      $size = (string)$parts[3];
+    }
+  } else {
+    // Fallback: name|url
+    $name = (string)$parts[0];
+    $url = (string)$parts[1];
+  }
+
+  if ($name === '' || $url === '' || !is_url($url)) {
+    return null;
+  }
+
+  $path = parse_url($url, PHP_URL_PATH);
+  $ext = is_string($path) ? strtolower(pathinfo($path, PATHINFO_EXTENSION)) : '';
+  if ($ext !== '' && !in_array($ext, $validExtensions, true)) {
+    return null;
+  }
+
+  return [$name, normalize_url_like($url), $size];
 }
 
 // Normalize URL-like strings: add percent-encoding for spaces and query values
@@ -2137,6 +2179,161 @@ function parse_vimm_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtens
   }
   return $result;
 }
+function parse_edgeemu_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  $result = [];
+  
+  // Check if this is a platform browse page (e.g., /browse/watara-supervision)
+  if (preg_match('#^https?://edgeemu\.net/browse/([^/]+)$#i', $urlOrFragment, $matches)) {
+    $platform = strtolower($matches[1]);
+
+    // Keep results unique across all sub-pages.
+    $seen = [];
+    $seedRows = parse_edgeemu_net_letter_page($dom, $sourceLabel, $urlOrFragment, $validExtensions);
+    foreach ($seedRows as $row) {
+      $key = strtolower(($row[0] ?? '') . '|' . ($row[1] ?? ''));
+      if (isset($seen[$key])) continue;
+      $seen[$key] = true;
+      $result[] = $row;
+    }
+
+    // Prefer letter URLs that are actually present on the platform page.
+    $letterUrls = [];
+    foreach ($dom->getElementsByTagName('a') as $a) {
+      $href = trim((string)$a->getAttribute('href'));
+      if ($href === '') continue;
+
+      if (preg_match('#^/browse/' . preg_quote($platform, '#') . '/([a-z0-9])$#i', $href, $m)) {
+        $letterUrls[] = 'https://edgeemu.net/browse/' . $platform . '/' . strtolower($m[1]);
+        continue;
+      }
+      if (preg_match('#^https?://edgeemu\.net/browse/' . preg_quote($platform, '#') . '/([a-z0-9])$#i', $href, $m)) {
+        $letterUrls[] = 'https://edgeemu.net/browse/' . $platform . '/' . strtolower($m[1]);
+      }
+    }
+    foreach ($dom->getElementsByTagName('option') as $opt) {
+      $val = trim((string)$opt->getAttribute('value'));
+      if ($val === '') continue;
+      if (preg_match('#^/browse/' . preg_quote($platform, '#') . '/([a-z0-9])$#i', $val, $m)) {
+        $letterUrls[] = 'https://edgeemu.net/browse/' . $platform . '/' . strtolower($m[1]);
+        continue;
+      }
+      if (preg_match('#^https?://edgeemu\\.net/browse/' . preg_quote($platform, '#') . '/([a-z0-9])$#i', $val, $m)) {
+        $letterUrls[] = 'https://edgeemu.net/browse/' . $platform . '/' . strtolower($m[1]);
+      }
+    }
+    $letterUrls = array_values(array_unique($letterUrls));
+
+    // Fallback when the page doesn't expose the letter links in HTML.
+    if (empty($letterUrls)) {
+      foreach (array_merge(range('a', 'z'), ['1']) as $char) {
+        $letterUrls[] = 'https://edgeemu.net/browse/' . $platform . '/' . $char;
+      }
+    }
+
+    // Hard bounds prevent endless loading in case of slow/unresponsive upstream.
+    $startedAt = microtime(true);
+    $maxTotalSeconds = 15.0;
+    $maxPages = 27;
+    $processed = 0;
+    $noNewStreak = 0;
+
+    foreach ($letterUrls as $letterUrl) {
+      if ($processed >= $maxPages) break;
+      if ((microtime(true) - $startedAt) >= $maxTotalSeconds) break;
+
+      $beforeCount = count($result);
+      $fetch = http_fetch($letterUrl, 3);
+      if (empty($fetch['ok']) || empty($fetch['body'])) {
+        $processed++;
+        $noNewStreak++;
+        if ($noNewStreak >= 6 && $processed >= 6) break;
+        continue;
+      }
+
+      $letterDom = new DOMDocument();
+      libxml_use_internal_errors(true);
+      @$letterDom->loadHTML($fetch['body']);
+
+      $letterResult = parse_edgeemu_net_letter_page($letterDom, $sourceLabel, $letterUrl, $validExtensions);
+      foreach ($letterResult as $row) {
+        $key = strtolower(($row[0] ?? '') . '|' . ($row[1] ?? ''));
+        if (isset($seen[$key])) continue;
+        $seen[$key] = true;
+        $result[] = $row;
+      }
+      if (count($result) > $beforeCount) {
+        $noNewStreak = 0;
+      } else {
+        $noNewStreak++;
+      }
+      $processed++;
+      if ($noNewStreak >= 6 && $processed >= 6) break;
+    }
+    return $result;
+  }
+  
+  // Check if this is a letter page (e.g., /browse/watara-supervision/a)
+  if (preg_match('#^https?://edgeemu\.net/browse/([^/]+)/[a-z0-9]$#i', $urlOrFragment)) {
+    return parse_edgeemu_net_letter_page($dom, $sourceLabel, $urlOrFragment, $validExtensions);
+  }
+  
+  return $result;
+}
+
+function parse_edgeemu_net_letter_page($dom, $sourceLabel, $urlOrFragment, $validExtensions) {
+  $result = [];
+  
+  // Parse the grid of games
+  $items = $dom->getElementsByTagName('div');
+  foreach ($items as $item) {
+    $class = $item->getAttribute('class');
+    if (strpos($class, 'item') === false) continue;
+    
+    $details = $item->getElementsByTagName('details')->item(0);
+    if (!$details) continue;
+    
+    $dataName = $details->getAttribute('data-name');
+    if (!$dataName) continue;
+    
+    $summary = $details->getElementsByTagName('summary')->item(0);
+    if (!$summary) continue;
+    $title = trim($summary->textContent);
+    
+    // Find the download link
+    $downloadLink = null;
+    $size = '';
+    $ps = $details->getElementsByTagName('p');
+    foreach ($ps as $p) {
+      $a = $p->getElementsByTagName('a')->item(0);
+      if ($a && trim($a->textContent) === 'download') {
+        $href = $a->getAttribute('href');
+        if ($href) {
+          $downloadLink = 'https://edgeemu.net' . $href;
+          // Extract size from the span in the same p
+          $spans = $p->getElementsByTagName('span');
+          foreach ($spans as $span) {
+            $spanText = trim($span->textContent);
+            // Split on comma and take only the first part (size), ignore download count
+            $sizeParts = explode(',', $spanText);
+            $rawSize = trim($sizeParts[0]);
+            if (preg_match('/\d+(?:\.\d+)?\s*[kmgtp]?b?/i', $rawSize)) {
+              // Normalize the size using the existing format_bytes function
+              $sizeBytes = parse_file_size_to_bytes($rawSize);
+              $size = format_bytes($sizeBytes);
+              break;
+            }
+          }
+          break;
+        }
+      }
+    }
+    
+    if ($downloadLink && $title) {
+      $result[] = [$dataName, $downloadLink, $size];
+    }
+  }
+  return $result;
+}
 function parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
   $out = [];
   foreach ($dom->getElementsByTagName('a') as $a) {
@@ -2458,6 +2655,15 @@ function parse_auto($html, $sourceLabel, $isUrl, $urlOrFragment, $validExtension
     $vimmRes = parse_vimm_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
     if ($vimmRes) return $vimmRes;
   }
+  // Check for edgeemu.net browse pages
+  $hasEdgeEmu = false;
+  if ($isUrl && preg_match('#^https?://edgeemu\.net/browse/#i', $urlOrFragment)) {
+    $hasEdgeEmu = true;
+  }
+  if ($hasEdgeEmu) {
+    $edgeEmuRes = parse_edgeemu_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($edgeEmuRes) return $edgeEmuRes;
+  }
   // Last resort: generic link scan
   $g = parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
   return $g;
@@ -2608,6 +2814,17 @@ try {
       $inputs = [];
       if (is_html_block($urls)) { $inputs = [$urls]; }
       else { $inputs = array_filter(array_map('trim', preg_split('/[\n,]+/', $urls))); }
+      $pipedRows = [];
+      $remainingInputs = [];
+      foreach ($inputs as $line) {
+        $parsedPipedRow = parse_piped_source_row($line, $validExtensions);
+        if (is_array($parsedPipedRow)) {
+          $pipedRows[] = $parsedPipedRow;
+        } else {
+          $remainingInputs[] = $line;
+        }
+      }
+      $inputs = $remainingInputs;
       // Normalize schemeless Archive.org lines to valid URLs
       $inputs = array_map(function($line){
         if ($line === '') return $line;
@@ -2628,6 +2845,26 @@ try {
       $inputs = $expandedInputs;
       $scraped = [];
       $debugHtmls = [];
+      if (!empty($pipedRows)) {
+        $scraped[] = ['label' => 'Pasted links (name|title_id|url)', 'rows' => $pipedRows];
+        $debugHtmls[] = [
+          'label' => 'Pasted links (name|title_id|url)',
+          'status' => 200,
+          'error' => '',
+          'effective_url' => '',
+          'parsed_count' => count($pipedRows),
+          'link_count' => 0,
+          'table_count' => 0,
+          'password_debug' => '',
+          'cookies' => $scrapeCookies !== '' ? 'provided' : '',
+          'valid_extensions_count' => count($validExtensions),
+          'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
+          'parse_debug' => 'Direct piped rows ingested without remote fetch.',
+          'raw_sample' => '',
+          'error_log' => '',
+          'html' => ''
+        ];
+      }
       // Apply URL normalization only to actual URLs, never to pasted HTML blocks.
       $inputs = array_map(function($line) {
         return is_html_block($line) ? $line : normalize_url_like($line);
@@ -4121,6 +4358,33 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
           const extBox = document.getElementById('scrapeExtensionsBox');
           if (!resultsBox || !extBox) return;
           const attachForms = Array.from(document.querySelectorAll('.scrape-attach-form'));
+          function extractExtensionFromRow(row) {
+            if (!Array.isArray(row)) return '';
+            const candidates = [row[1], row[0]];
+            for (const candidate of candidates) {
+              if (typeof candidate !== 'string') continue;
+              let value = candidate.trim();
+              if (!value) continue;
+              try {
+                if (/^https?:\/\//i.test(value)) {
+                  const parsed = new URL(value);
+                  const fileFromPath = decodeURIComponent((parsed.pathname.split('/').pop() || '').trim());
+                  const fileFromQuery = decodeURIComponent((parsed.searchParams.get('filename') || '').trim());
+                  value = fileFromQuery || fileFromPath;
+                } else {
+                  value = value.split('/').pop() || value;
+                }
+              } catch (_) {
+                value = value.split('/').pop() || value;
+              }
+              const dotIndex = value.lastIndexOf('.');
+              if (dotIndex > 0 && dotIndex < value.length - 1) {
+                const ext = value.slice(dotIndex + 1).toLowerCase();
+                if (/^[a-z0-9]{1,8}$/.test(ext)) return ext;
+              }
+            }
+            return '';
+          }
           // Collect all extensions from all results
           let allExts = new Set();
           let allRows = [];
@@ -4128,10 +4392,8 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
             const rows = JSON.parse(block.getAttribute('data-rows'));
             allRows = allRows.concat(rows);
             for (const row of rows) {
-              if (row[0]) {
-                const ext = (row[0].split('.').pop() || '').toLowerCase();
-                if (ext) allExts.add(ext);
-              }
+              const ext = extractExtensionFromRow(row);
+              if (ext) allExts.add(ext);
             }
           });
           allExts = Array.from(allExts).sort();
@@ -4165,7 +4427,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
             const checked = getCheckedExtensions();
             document.querySelectorAll('.scrape-result-block').forEach(block => {
               const rows = JSON.parse(block.getAttribute('data-rows'));
-              const filtered = rows.filter(row => checked.includes((row[0].split('.').pop() || '').toLowerCase()));
+              const filtered = rows.filter(row => checked.includes(extractExtensionFromRow(row)));
               block.querySelector('.scrape-rows-json').textContent = JSON.stringify(filtered, null, 2);
             });
             window.syncScrapeAttachExtensions();
