@@ -145,6 +145,66 @@ function t(string $key, string $fallback = ''): string {
 // -------------- Utilities & Shared -----------------
 function is_url($str) { return filter_var($str, FILTER_VALIDATE_URL); }
 function is_html_block($str) { return preg_match('/<!doctype|<(tr|table|html|body|pre|main|ul|li|div)[\s>]/i', $str); }
+function read_uploaded_scrape_text_file(string $fieldName, ?string &$error = null): string {
+  if (!isset($_FILES[$fieldName]) || !is_array($_FILES[$fieldName])) {
+    return '';
+  }
+
+  $upload = $_FILES[$fieldName];
+  $errorCode = (int)($upload['error'] ?? UPLOAD_ERR_NO_FILE);
+  if ($errorCode === UPLOAD_ERR_NO_FILE) {
+    return '';
+  }
+  if ($errorCode !== UPLOAD_ERR_OK) {
+    switch ($errorCode) {
+      case UPLOAD_ERR_INI_SIZE:
+      case UPLOAD_ERR_FORM_SIZE:
+        $error = t('err.scrape_urls_file_too_large', 'Text file too large (server limits).');
+        break;
+      case UPLOAD_ERR_PARTIAL:
+        $error = t('err.scrape_urls_file_partial', 'Text file upload was interrupted.');
+        break;
+      case UPLOAD_ERR_NO_TMP_DIR:
+        $error = t('err.upload_no_tmp_dir', 'Temporary folder missing on server.');
+        break;
+      case UPLOAD_ERR_CANT_WRITE:
+        $error = t('err.upload_cant_write', 'Unable to write uploaded file to disk.');
+        break;
+      case UPLOAD_ERR_EXTENSION:
+        $error = t('err.upload_blocked_extension', 'Upload blocked by a PHP extension.');
+        break;
+      default:
+        $error = t('err.scrape_urls_file_unknown', 'Unknown error while uploading text file.');
+        break;
+    }
+    return '';
+  }
+
+  $originalName = trim((string)($upload['name'] ?? ''));
+  $tmpPath = (string)($upload['tmp_name'] ?? '');
+  if ($originalName === '' || $tmpPath === '') {
+    $error = t('err.scrape_urls_file_invalid', 'Invalid text file.');
+    return '';
+  }
+
+  $extension = strtolower((string)pathinfo($originalName, PATHINFO_EXTENSION));
+  if ($extension !== '' && !in_array($extension, ['txt', 'csv', 'list'], true)) {
+    $error = t('err.scrape_urls_file_type', 'The links file must be a text file (.txt, .csv, .list).');
+    return '';
+  }
+
+  $contents = @file_get_contents($tmpPath);
+  if ($contents === false) {
+    $error = t('err.scrape_urls_file_read', 'Unable to read uploaded text file.');
+    return '';
+  }
+
+  if (strncmp($contents, "\xEF\xBB\xBF", 3) === 0) {
+    $contents = substr($contents, 3);
+  }
+
+  return trim(str_replace(["\r\n", "\r"], "\n", $contents));
+}
 function build_scrape_input_label(string $input, int $index, bool $isHtml): string {
   if (!$isHtml) return $input !== '' ? $input : ('Entree #' . ($index + 1));
   if (preg_match('/<title[^>]*>(.*?)<\/title>/is', $input, $m)) {
@@ -263,6 +323,30 @@ function parse_piped_source_row(string $line, array $validExtensions): ?array {
   }
 
   return [$name, normalize_url_like($url), $size];
+}
+
+function parse_direct_source_url_row(string $line, array $validExtensions): ?array {
+  $line = trim($line);
+  if ($line === '' || strpos($line, '|') !== false || !is_url($line)) {
+    return null;
+  }
+
+  if (is_torrent_url($line)) {
+    return build_torrent_source_row($line);
+  }
+
+  $normalizedUrl = normalize_url_like($line);
+  $path = parse_url($normalizedUrl, PHP_URL_PATH);
+  $name = is_string($path) ? urldecode(basename($path)) : '';
+  $ext = is_string($path) ? strtolower(pathinfo($path, PATHINFO_EXTENSION)) : '';
+  if ($name === '') {
+    return null;
+  }
+  if ($ext !== '' && !in_array($ext, $validExtensions, true)) {
+    return null;
+  }
+
+  return [$name, $normalizedUrl, ''];
 }
 
 // Normalize URL-like strings: add percent-encoding for spaces and query values
@@ -2791,6 +2875,13 @@ try {
     // Scrape
     case 'scrape':
       $urls = trim($_POST['urls'] ?? '');
+      $uploadedUrlsError = null;
+      $uploadedUrls = read_uploaded_scrape_text_file('urls_file', $uploadedUrlsError);
+      if ($uploadedUrlsError !== null) {
+        $error = $uploadedUrlsError;
+        break;
+      }
+      $uploadedInputs = $uploadedUrls !== '' ? array_values(array_filter(array_map('trim', preg_split('/\n+/', $uploadedUrls)))) : [];
       $scrapePassword = trim($_POST['scrape_password'] ?? '');
       $scrapeCookies = trim($_POST['scrape_cookies'] ?? ($_SESSION['scrape_cookies'] ?? ''));
       $rememberCookies = !empty($_POST['remember_cookies']);
@@ -2805,16 +2896,19 @@ try {
       // By default, allow all known extensions (not only zip)
       $exts = isset($_POST['extensions']) ? array_map('strtolower', (array)$_POST['extensions']) : $allowedExtensions;
       $validExtensions = array_values(array_intersect($exts, $allowedExtensions));
-      if (!$urls) { $error = 'Entrée vide.'; break; }
+      if (!$urls && empty($uploadedInputs)) { $error = 'Entrée vide.'; break; }
       if (!$validExtensions) { $error = 'Aucune extension valide.'; break; }
       // Detect URL-encoded HTML (e.g. %20 instead of spaces from browser copy) and decode it
       if (strpos($urls, '%20') !== false && preg_match('/<[a-zA-Z]/', urldecode($urls))) {
         $urls = urldecode($urls);
       }
       $inputs = [];
-      if (is_html_block($urls)) { $inputs = [$urls]; }
-      else { $inputs = array_filter(array_map('trim', preg_split('/[\n,]+/', $urls))); }
+      if ($urls !== '') {
+        if (is_html_block($urls)) { $inputs = [$urls]; }
+        else { $inputs = array_values(array_filter(array_map('trim', preg_split('/[\n,]+/', $urls)))); }
+      }
       $pipedRows = [];
+      $uploadedRows = [];
       $remainingInputs = [];
       foreach ($inputs as $line) {
         $parsedPipedRow = parse_piped_source_row($line, $validExtensions);
@@ -2822,6 +2916,17 @@ try {
           $pipedRows[] = $parsedPipedRow;
         } else {
           $remainingInputs[] = $line;
+        }
+      }
+      foreach ($uploadedInputs as $line) {
+        $parsedPipedRow = parse_piped_source_row($line, $validExtensions);
+        if (is_array($parsedPipedRow)) {
+          $uploadedRows[] = $parsedPipedRow;
+          continue;
+        }
+        $parsedDirectUrlRow = parse_direct_source_url_row($line, $validExtensions);
+        if (is_array($parsedDirectUrlRow)) {
+          $uploadedRows[] = $parsedDirectUrlRow;
         }
       }
       $inputs = $remainingInputs;
@@ -2860,6 +2965,26 @@ try {
           'valid_extensions_count' => count($validExtensions),
           'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
           'parse_debug' => 'Direct piped rows ingested without remote fetch.',
+          'raw_sample' => '',
+          'error_log' => '',
+          'html' => ''
+        ];
+      }
+      if (!empty($uploadedRows)) {
+        $scraped[] = ['label' => 'Uploaded links file', 'rows' => $uploadedRows];
+        $debugHtmls[] = [
+          'label' => 'Uploaded links file',
+          'status' => 200,
+          'error' => '',
+          'effective_url' => '',
+          'parsed_count' => count($uploadedRows),
+          'link_count' => 0,
+          'table_count' => 0,
+          'password_debug' => '',
+          'cookies' => '',
+          'valid_extensions_count' => count($validExtensions),
+          'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
+          'parse_debug' => 'Uploaded text file rows ingested without remote fetch.',
           'raw_sample' => '',
           'error_log' => '',
           'html' => ''
@@ -3519,20 +3644,20 @@ try {
       session_write_close();
 
       rgsx_zip_progress_clear($progressKey);
-      rgsx_zip_progress_write('preparing', 'Préparation des données du package…', 5, [], $progressKey);
+      rgsx_zip_progress_write('preparing', t('zip.preparing_data', 'Preparing package data...'), 5, [], $progressKey);
 
       $zip = new ZipArchive();
       $tmpZip = tempnam(sys_get_temp_dir(), 'rgsx_zip_');
       $cacheBuild = null;
       if ($zip->open($tmpZip, ZipArchive::OVERWRITE) !== true) {
-        rgsx_zip_progress_write('error', 'Impossible de créer le ZIP.', 100, [], $progressKey);
-        $error = 'Impossible de créer le ZIP.';
+        rgsx_zip_progress_write('error', t('err.zip_create_failed', 'Unable to create ZIP.'), 100, [], $progressKey);
+        $error = t('err.zip_create_failed', 'Unable to create ZIP.');
         break;
       }
       // systems_list.json
       $systemsJson = json_encode($systemsData, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
       $zip->addFromString('systems_list.json', $systemsJson);
-      rgsx_zip_progress_write('systems', 'Ajout de systems_list.json…', 12, [], $progressKey);
+      rgsx_zip_progress_write('systems', t('zip.add_systems', 'Adding systems_list.json...'), 12, [], $progressKey);
       // games/
       $gamesTotal = max(1, count($platformGamesData));
       $gamesIndex = 0;
@@ -3546,7 +3671,7 @@ try {
         }
         $zip->addFromString('games/'.$filename, $json);
         $gamesPercent = 12 + (int)floor(($gamesIndex / $gamesTotal) * 48);
-        rgsx_zip_progress_write('games', 'Ajout des listes de jeux…', $gamesPercent, [
+        rgsx_zip_progress_write('games', t('zip.add_games', 'Adding game lists...'), $gamesPercent, [
           'detail' => $filename . ' (' . $gamesIndex . '/' . $gamesTotal . ')',
         ], $progressKey);
       }
@@ -3557,11 +3682,11 @@ try {
         $imagesIndex++;
         $zip->addFile($img['tmp'], 'images/'.basename($img['name']));
         $imagesPercent = 60 + (int)floor(($imagesIndex / $imagesTotal) * 10);
-        rgsx_zip_progress_write('images', 'Ajout des images…', $imagesPercent, [
+        rgsx_zip_progress_write('images', t('zip.add_images', 'Adding images...'), $imagesPercent, [
           'detail' => basename((string)($img['name'] ?? '')) . ' (' . $imagesIndex . '/' . $imagesTotal . ')',
         ], $progressKey);
       }
-      rgsx_zip_progress_write('cache', 'Génération des caches intégrés…', 72, [], $progressKey);
+      rgsx_zip_progress_write('cache', t('zip.generate_caches', 'Generating embedded caches...'), 72, [], $progressKey);
       $cacheBuild = generate_embedded_rgsx_caches($platformGamesData);
       if (!empty($cacheBuild['ok'])) {
         if (!empty($cacheBuild['torrent_cache'])) {
@@ -3593,9 +3718,9 @@ try {
           'command' => $cacheBuild['command'] ?? '',
         ]);
       }
-      rgsx_zip_progress_write('finalizing', 'Finalisation de l’archive ZIP…', 92, [], $progressKey);
+      rgsx_zip_progress_write('finalizing', t('zip.finalizing', 'Finalizing ZIP archive...'), 92, [], $progressKey);
       $zip->close();
-      rgsx_zip_progress_write('downloading', 'ZIP prêt, transfert vers le navigateur…', 100, [], $progressKey);
+      rgsx_zip_progress_write('downloading', t('zip.ready_transfer', 'ZIP ready, sending to browser...'), 100, [], $progressKey);
       $zipSize = @filesize($tmpZip);
       rgsx_debug_log('build_zip.finish', [
         'action' => 'build_zip',
@@ -3680,7 +3805,7 @@ $systemsPaginated = array_slice($systems, $systemsOffset, $systemsPerPage);
 $gamesMap = $_SESSION['platform_games'];
 // Debug temporaire
 if (empty($gamesMap)) {
-  $message = "No loaded sources or games.";
+  $message = t('msg.no_loaded_sources_games', 'No loaded sources or games.');
 }
 $images = $_SESSION['images'];
 $imagesByName = [];
@@ -3736,6 +3861,29 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
   <script>
     // Base URL for local requests
     const baseUrl = '<?php echo addslashes($baseUrl); ?>';
+    const uiText = <?php echo json_encode([
+      'zipReadyTitle' => t('zip.ready_title', 'ZIP ready'),
+      'zipReadyMessage' => t('zip.ready_message', 'The file is ready. If the download does not start, use the button below.'),
+      'zipReadySuccess' => t('zip.ready_success', 'Archive generated successfully.'),
+      'zipDefaultFile' => t('zip.default_filename', 'games.zip'),
+      'selectGeneric' => t('placeholder.select_generic', 'Select...'),
+      'gamesLoadError' => t('err.games_loading', 'Loading error:'),
+      'zipStatePreparing' => t('zip.state_preparing_title', 'Preparing ZIP...'),
+      'zipStateSystems' => t('zip.state_systems_title', 'Adding systems...'),
+      'zipStateGames' => t('zip.state_games_title', 'Adding game lists...'),
+      'zipStateImages' => t('zip.state_images_title', 'Adding images...'),
+      'zipStateCache' => t('zip.state_cache_title', 'Generating caches...'),
+      'zipStateFinalizing' => t('zip.state_finalizing_title', 'Finalizing ZIP...'),
+      'zipStateDownloading' => t('zip.state_downloading_title', 'Download ready...'),
+      'zipStateError' => t('zip.state_error_title', 'Generation error'),
+      'zipStateDefault' => t('zip.state_default_title', 'Generating ZIP...'),
+      'overlayLoading' => t('overlay.loading', 'Loading…'),
+      'overlayProcessing' => t('overlay.processing', 'Processing…'),
+      'overlayZipGenerating' => t('overlay.zip_generating', 'Generating ZIP…'),
+      'overlayZipPreparing' => t('overlay.zip_preparing', 'Preparing files, generating caches and compressing.'),
+      'overlayJsonPreparing' => t('overlay.json_preparing', 'Preparing JSON…'),
+      'overlayJsonExporting' => t('overlay.json_exporting', 'Exporting system list.'),
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>;
     
     // Show image in modal
     function showImageModal(imageName) {
@@ -3802,18 +3950,18 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
       const detailNode = document.getElementById('loadingOverlayDetail');
       const downloadButton = document.getElementById('loadingOverlayDownloadButton');
       const closeButton = document.getElementById('loadingOverlayCloseButton');
-      if (titleNode) titleNode.textContent = 'ZIP prêt';
-      if (messageNode) messageNode.textContent = 'Le fichier est prêt. Si le téléchargement ne démarre pas, utilisez le bouton ci-dessous.';
-      if (detailNode) detailNode.textContent = fileName || 'games.zip';
+      if (titleNode) titleNode.textContent = uiText.zipReadyTitle;
+      if (messageNode) messageNode.textContent = uiText.zipReadyMessage;
+      if (detailNode) detailNode.textContent = fileName || uiText.zipDefaultFile;
       if (downloadButton) {
         downloadButton.href = blobUrl;
-        downloadButton.download = fileName || 'games.zip';
+        downloadButton.download = fileName || uiText.zipDefaultFile;
         downloadButton.classList.remove('d-none');
       }
       if (closeButton) {
         closeButton.classList.remove('d-none');
       }
-      setOverlayProgress(100, 'Archive générée avec succès.');
+      setOverlayProgress(100, uiText.zipReadySuccess);
     }
 
     function setOverlayProgress(percent, detail){
@@ -3856,16 +4004,16 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
           const messageNode = document.getElementById('loadingOverlayMessage');
           if (titleNode && payload.state) {
             const titles = {
-              preparing: 'Préparation du ZIP…',
-              systems: 'Ajout des systèmes…',
-              games: 'Ajout des listes de jeux…',
-              images: 'Ajout des images…',
-              cache: 'Génération des caches…',
-              finalizing: 'Finalisation du ZIP…',
-              downloading: 'Téléchargement prêt…',
-              error: 'Erreur de génération',
+              preparing: uiText.zipStatePreparing,
+              systems: uiText.zipStateSystems,
+              games: uiText.zipStateGames,
+              images: uiText.zipStateImages,
+              cache: uiText.zipStateCache,
+              finalizing: uiText.zipStateFinalizing,
+              downloading: uiText.zipStateDownloading,
+              error: uiText.zipStateError,
             };
-            titleNode.textContent = titles[payload.state] || 'Génération du ZIP…';
+            titleNode.textContent = titles[payload.state] || uiText.zipStateDefault;
           }
           if (messageNode && payload.message) {
             messageNode.textContent = payload.message;
@@ -3892,8 +4040,8 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
       const titleNode = document.getElementById('loadingOverlayTitle');
       const messageNode = document.getElementById('loadingOverlayMessage');
       resetOverlayActions();
-      if (titleNode) titleNode.textContent = title || 'Chargement…';
-      if (messageNode) messageNode.textContent = message || 'Veuillez patienter.';
+      if (titleNode) titleNode.textContent = title || uiText.overlayLoading;
+      if (messageNode) messageNode.textContent = message || uiText.overlayProcessing;
       setOverlayProgress(0, '');
       if (overlay) overlay.classList.add('active');
     }
@@ -3904,23 +4052,20 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
     }
     function showOverlayAndSubmit(form){
       if (!(form instanceof HTMLFormElement)) return;
-      showOverlay('Chargement…', 'Traitement en cours.');
+      showOverlay(uiText.overlayLoading, uiText.overlayProcessing);
       // small delay to allow paint before navigation
       setTimeout(() => { try { form.submit(); } catch(e){} }, 60);
     }
     function showDownloadOverlay(kind){
       if (kind === 'zip') {
-        showOverlay(
-          'Génération du ZIP…',
-          'Préparation des fichiers, génération des caches et compression en cours.'
-        );
+        showOverlay(uiText.overlayZipGenerating, uiText.overlayZipPreparing);
         return;
       }
       if (kind === 'systems') {
-        showOverlay('Préparation du JSON…', 'Export de la liste des systèmes en cours.');
+        showOverlay(uiText.overlayJsonPreparing, uiText.overlayJsonExporting);
         return;
       }
-      showOverlay('Chargement…', 'Traitement en cours.');
+      showOverlay(uiText.overlayLoading, uiText.overlayProcessing);
     }
     function getDownloadFilename(response, fallbackName) {
       try {
@@ -3979,16 +4124,16 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
   <div id="loadingOverlay" class="loading-overlay">
     <div class="loading-box">
       <div class="spinner-border text-light" role="status" aria-hidden="true"></div>
-      <div id="loadingOverlayTitle">Chargement…</div>
-      <div id="loadingOverlayMessage" class="small-muted text-light">Veuillez patienter.</div>
+      <div id="loadingOverlayTitle"><?php echo t('overlay.loading_title', 'Chargement…'); ?></div>
+      <div id="loadingOverlayMessage" class="small-muted text-light"><?php echo t('overlay.please_wait', 'Veuillez patienter.'); ?></div>
       <div id="loadingOverlayDetail" class="small-muted text-light"></div>
       <div class="loading-progress-wrap">
         <div class="loading-progress-bar"><div id="loadingOverlayProgressBar" class="loading-progress-bar-fill"></div></div>
         <div id="loadingOverlayProgressValue" class="loading-progress-value"></div>
       </div>
       <div class="d-flex justify-content-center gap-2 mt-3">
-        <a id="loadingOverlayDownloadButton" class="btn btn-success d-none" href="#">Télécharger le ZIP</a>
-        <button id="loadingOverlayCloseButton" type="button" class="btn btn-outline-light d-none" onclick="hideOverlay()">Fermer</button>
+        <a id="loadingOverlayDownloadButton" class="btn btn-success d-none" href="#"><?php echo t('overlay.download_zip', 'Télécharger le ZIP'); ?></a>
+        <button id="loadingOverlayCloseButton" type="button" class="btn btn-outline-light d-none" onclick="hideOverlay()"><?php echo t('btn.close', 'Fermer'); ?></button>
       </div>
     </div>
   </div>
@@ -4036,13 +4181,18 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
   <div class="tab-content border border-top-0 p-3">
     <!-- Scrape -->
     <div class="tab-pane fade <?php echo $activeTab==='tab-scrape'?'show active':''; ?>" id="tab-scrape">
-      <form method="post" class="mb-3" id="scrapeForm">
+      <form method="post" class="mb-3" id="scrapeForm" enctype="multipart/form-data">
         <input type="hidden" name="action" value="scrape">
         <input type="hidden" name="active_tab" value="tab-scrape">
         <div class="mb-2">
           <label class="form-label"><?php echo t('scrape.urls_label','URLs ou HTML'); ?></label>
           <textarea class="form-control" name="urls" rows="6" placeholder="<?php echo t('scrape.urls_placeholder'); ?>"></textarea>
           <div class="small-muted"><?php echo t('scrape.supported'); ?></div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label"><?php echo t('scrape.urls_file_label', 'Fichier texte de liens'); ?></label>
+          <input type="file" class="form-control" name="urls_file" accept=".txt,.csv,.list,text/plain">
+          <div class="form-text"><?php echo t('scrape.urls_file_help', 'Importez un fichier texte contenant un lien par ligne, ou des lignes au format name|title_id|url.'); ?></div>
         </div>
         <div class="mb-2">
           <label class="form-label"><?php echo t('scrape.password_label'); ?></label>
@@ -4380,7 +4530,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
               const dotIndex = value.lastIndexOf('.');
               if (dotIndex > 0 && dotIndex < value.length - 1) {
                 const ext = value.slice(dotIndex + 1).toLowerCase();
-                if (/^[a-z0-9]{1,8}$/.test(ext)) return ext;
+                if (/^[a-z0-9]{1,32}$/.test(ext)) return ext;
               }
             }
             return '';
@@ -4475,7 +4625,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
               <label class="form-label"><?php echo t('label.platform_name'); ?></label>
               <div class="platform-form-stack">
                 <select class="form-select" id="batoceraPlatformName">
-                  <option value="">Select...</option>
+                  <option value=""><?php echo t('placeholder.select_generic', 'Select...'); ?></option>
                 </select>
                 <input class="form-control" name="platform_name" id="platformNameInput" required placeholder="<?php echo h(t('placeholder.platform_name','Nom plateforme')); ?>">
               </div>
@@ -4484,7 +4634,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
               <label class="form-label"><?php echo t('label.folder'); ?></label>
               <div class="platform-form-stack">
                 <select class="form-select" id="batoceraFolder">
-                  <option value="">Select...</option>
+                  <option value=""><?php echo t('placeholder.select_generic', 'Select...'); ?></option>
                 </select>
                 <input class="form-control" name="folder" id="folderInput" placeholder="ex: chihiro" required>
               </div>
@@ -4564,7 +4714,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
                   <div class="d-flex align-items-center gap-2">
                     <span class="small text-muted"><?php echo h($imgName); ?></span>
                     <?php if (isset($imagesByName[$imgName])): ?>
-                      <button type="button" class="btn btn-sm btn-outline-info" onclick="showImageModal('<?php echo addslashes($imgName); ?>')" title="Voir image"><?php echo t('btn.view'); ?></button>
+                      <button type="button" class="btn btn-sm btn-outline-info" onclick="showImageModal('<?php echo addslashes($imgName); ?>')" title="<?php echo h(t('tooltip.view_image', 'Voir image')); ?>"><?php echo t('btn.view'); ?></button>
                     <?php endif; ?>
                   </div>
                 <?php else: ?>
@@ -4573,12 +4723,12 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
               </td>
               <td>
                 <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleGames(<?php echo $realIndex; ?>)" data-games-count="<?php echo $gamesCount; ?>" data-games-file="<?php echo h($platformFile); ?>">
-                  <?php echo $gamesCount; ?> jeux
+                  <?php printf(t('label.games_count', '%d jeux'), $gamesCount); ?>
                 </button>
               </td>
               <td class="text-nowrap">
                 <button type="button" class="btn btn-sm btn-outline-primary" onclick="toggleEditRow(<?php echo $realIndex; ?>)"><?php echo t('btn.modify'); ?></button>
-                <form method="post" class="d-inline" onsubmit="return confirm('Supprimer cette plateforme et tous ses jeux ?');">
+                <form method="post" class="d-inline" onsubmit="return confirm('<?php echo addslashes(t('confirm.delete_platform_with_games', 'Supprimer cette plateforme et tous ses jeux ?')); ?>');">
                   <input type="hidden" name="action" value="platform_delete_complete">
                   <input type="hidden" name="active_tab" value="tab-systems">
                   <input type="hidden" name="platform_index" value="<?php echo $realIndex; ?>">
@@ -4604,7 +4754,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
                       <label class="form-label"><?php echo t('label.platform_name'); ?></label>
                       <div class="platform-form-stack">
                         <select class="form-select form-select-sm batocera-name-select">
-                          <option value="">Select...</option>
+                          <option value=""><?php echo t('placeholder.select_generic', 'Select...'); ?></option>
                         </select>
                         <input class="form-control form-control-sm" name="platform_name" value="<?php echo h($platformName); ?>" required>
                       </div>
@@ -4613,7 +4763,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
                       <label class="form-label"><?php echo t('label.folder'); ?></label>
                       <div class="platform-form-stack">
                         <select class="form-select form-select-sm batocera-folder-select">
-                          <option value="">Select...</option>
+                          <option value=""><?php echo t('placeholder.select_generic', 'Select...'); ?></option>
                         </select>
                         <input class="form-control form-control-sm" name="folder" value="<?php echo h($row['folder'] ?? ''); ?>" required>
                       </div>
@@ -4649,7 +4799,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
                       <!-- Bouton pour ajouter un jeu -->
                       <button class="btn btn-sm btn-success me-2" onclick="toggleAddGame(<?php echo $realIndex; ?>)"><?php echo t('btn.add_game'); ?></button>
                       <!-- Bouton pour supprimer tous les jeux de cette plateforme -->
-                      <form method="post" class="d-inline" onsubmit="return confirm('Supprimer tous les jeux de cette plateforme ?');">
+                      <form method="post" class="d-inline" onsubmit="return confirm('<?php echo addslashes(t('confirm.clear_platform_games', 'Supprimer tous les jeux de cette plateforme ?')); ?>');">
                         <input type="hidden" name="action" value="games_clear_platform">
                         <input type="hidden" name="active_tab" value="tab-systems">
                         <input type="hidden" name="games_file" value="<?php echo h($platformFile); ?>">
@@ -4667,7 +4817,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
                         <input type="hidden" name="games_file" value="<?php echo h($platformFile); ?>">
                         <div class="col-md-4">
                           <label class="form-label"><?php echo t('label.game_name'); ?></label>
-                          <input class="form-control form-control-sm" name="game_name" placeholder="Nom du fichier" required>
+                          <input class="form-control form-control-sm" name="game_name" placeholder="<?php echo h(t('placeholder.game_name', 'Nom du fichier')); ?>" required>
                         </div>
                         <div class="col-md-6">
                           <label class="form-label"><?php echo t('label.url'); ?></label>
@@ -4679,14 +4829,14 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
                         </div>
                         <div class="col-12">
                           <button class="btn btn-sm btn-success" type="submit"><?php echo t('btn.add_line'); ?></button>
-                          <button class="btn btn-sm btn-secondary" type="button" onclick="toggleAddGame(<?php echo $realIndex; ?>)">Annuler</button>
+                          <button class="btn btn-sm btn-secondary" type="button" onclick="toggleAddGame(<?php echo $realIndex; ?>)"><?php echo t('btn.cancel'); ?></button>
                         </div>
                       </form>
                     </div>
                   </div>
                   
                   <!-- Liste des jeux -->
-                  <div class="small text-muted" id="loading-games-<?php echo $realIndex; ?>" style="display:none;">Chargement des jeux...</div>
+                  <div class="small text-muted" id="loading-games-<?php echo $realIndex; ?>" style="display:none;"><?php echo t('misc.loading_games', 'Chargement des jeux...'); ?></div>
                   <div id="games-body-<?php echo $realIndex; ?>"></div>
                 </div>
               </td>
@@ -4718,7 +4868,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
             <ul class="small">
               <li><?php printf(t('stats.systems','Systèmes: %d entrée(s)'), count($systems)); ?></li>
               <li><?php printf(t('stats.platforms_loaded','Plateformes chargées: %d fichier(s)'), count($gamesMap)); ?></li>
-              <li>Images: <?php echo count($images); ?> fichier(s)</li>
+              <li><?php printf(t('stats.images', 'Images: %d file(s)'), count($images)); ?></li>
             </ul>
             <div class="d-flex flex-column gap-2">
             <form method="post" id="buildZipForm">
@@ -4745,7 +4895,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
     <div class="modal-dialog modal-lg">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title" id="imageModalLabel">Aperçu image</h5>
+          <h5 class="modal-title" id="imageModalLabel"><?php echo t('modal.image_preview', 'Aperçu image'); ?></h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body text-center">
@@ -4755,7 +4905,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
             </div>
           </div>
           <img id="modalImage" class="img-fluid" style="max-height: 70vh; display: none;" alt="Aperçu">
-          <div id="imageError" class="text-danger d-none">Erreur de chargement de l'image</div>
+          <div id="imageError" class="text-danger d-none"><?php echo t('err.image_load', 'Erreur de chargement de l\'image'); ?></div>
         </div>
       </div>
     </div>
@@ -4804,8 +4954,8 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
         const folderSel = document.getElementById('batoceraFolder');
         if (!nameSel || !folderSel) return;
         // Clear and repopulate placeholders
-        nameSel.innerHTML = '<option value="">Select...</option>';
-        folderSel.innerHTML = '<option value="">Select...</option>';
+        nameSel.innerHTML = '<option value="">' + uiText.selectGeneric + '</option>';
+        folderSel.innerHTML = '<option value="">' + uiText.selectGeneric + '</option>';
         // Sort safely by name
         const sorted = batoceraSystems.slice().sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr', {sensitivity:'base'}));
         for (const sys of sorted) {
@@ -4907,7 +5057,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
       const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : panel.classList.contains('d-none');
       panel.classList.toggle('d-none', !shouldOpen);
       button.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
-      button.textContent = shouldOpen ? (button.dataset.openLabel || 'Masquer nouvelle plateforme') : (button.dataset.closedLabel || 'Créer nouvelle plateforme');
+      button.textContent = shouldOpen ? (button.dataset.openLabel || '') : (button.dataset.closedLabel || '');
     }
 
     document.addEventListener('DOMContentLoaded', function() {
@@ -4947,8 +5097,8 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
       if (!nameSel || !folderSel || !batoceraSystems || batoceraSystems.length === 0) return;
       
       // Clear and populate
-      nameSel.innerHTML = '<option value="">Select...</option>';
-      folderSel.innerHTML = '<option value="">Select...</option>';
+      nameSel.innerHTML = '<option value="">' + uiText.selectGeneric + '</option>';
+      folderSel.innerHTML = '<option value="">' + uiText.selectGeneric + '</option>';
       
       // Sort by name
       const sorted = batoceraSystems.slice().sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr', {sensitivity:'base'}));
@@ -5063,7 +5213,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
         window.activeRequests.delete(controller);
         if (loadingDiv) loadingDiv.style.display = 'none';
         const errorMsg = err.name === 'AbortError' ? 'Timeout (30s)' : (err && err.message ? err.message : err);
-        targetBody.innerHTML = '<div class="text-danger">Erreur de chargement: ' + errorMsg + '</div>';
+        targetBody.innerHTML = '<div class="text-danger">' + uiText.gamesLoadError + ' ' + errorMsg + '</div>';
       });
     }
 

@@ -4,16 +4,21 @@
   "tab.systems": "Edit Platforms / Games",
   "tab.package": "ZIP Package",
 
-  "label.platform_name": "platform_name",
-  "label.folder": "folder",
-  "label.platform_image": "platform_image",
-  "label.platform_image_replace": "platform_image (replace)",
+  "label.platform_name": "Platform name",
+  "label.folder": "Folder",
+  "label.platform_image": "Platform image",
+  "label.platform_image_replace": "Platform image (replace)",
   "label.file_platform": "Platform file",
   "label.game_name": "Name/Archive",
   "label.url": "URL",
   "label.size": "Size",
   "label.per_page": "Per page",
   "label.extensions_detected": "Detected extensions:",
+  "label.games": "Games",
+  "label.games_count": "%d games",
+  "label.actions": "Actions",
+  "label.games_of_platform": "Games of %s (%d)",
+  "label.sort_order": "Sort order",
 
   "btn.add": "Add",
   "btn.add_line": "Add a row",
@@ -23,6 +28,7 @@
   "btn.delete": "Delete",
   "btn.save": "Save",
   "btn.cancel": "Cancel",
+  "btn.close": "Close",
   "btn.view": "View",
   "btn.build_zip": "Create ZIP (games.zip)",
   "btn.download_systems": "Download systems_list.json only",
@@ -32,6 +38,12 @@
   "btn.scrape_go": "Scrape",
   "btn.attach_platform": "ADD TO PLATFORM",
   "btn.attach_platform_replace": "REPLACE EXISTING LINKS",
+  "btn.attach_all": "ADD ALL",
+  "btn.attach_all_replace": "REPLACE ALL",
+  "btn.add_game": "Add a game",
+  "btn.clean_games": "Clean games",
+  "btn.create_new_platform": "Create new platform",
+  "btn.hide_new_platform_form": "Hide new platform",
 
   "confirm.clear_platforms": "Clear all platforms?",
   "confirm.clear_games": "Clear all games from every platform?",
@@ -39,6 +51,8 @@
   "confirm.delete_entry": "Delete this entry?",
   "confirm.delete_platform": "Delete this platform from the list?",
   "confirm.delete_row": "Delete this row?",
+  "confirm.delete_platform_with_games": "Delete this platform and all its games?",
+  "confirm.clear_platform_games": "Delete all games from this platform?",
 
   "pagination.prev": "« Prev",
   "pagination.next": "Next »",
@@ -58,6 +72,7 @@
   "msg.games.platform_deleted": "Platform removed: %s",
   "msg.games.platform_cleared": "All games from %s have been removed.",
   "msg.games.all_cleared": "All game lists have been cleared.",
+  "msg.no_loaded_sources_games": "No loaded sources or games.",
 
   "err.missing_params": "Missing parameters.",
   "err.json_invalid": "Invalid JSON.",
@@ -72,6 +87,18 @@
   "err.json_invalid_or_not_array": "Invalid or non-array JSON.",
   "err.temp_file_missing": "Temp file missing or unreadable.",
   "err.select_platform": "Choose a platform",
+  "err.zip_create_failed": "Unable to create ZIP.",
+  "err.games_loading": "Loading error:",
+  "err.image_load": "Image loading error",
+  "err.scrape_urls_file_too_large": "Text file too large (server limits).",
+  "err.scrape_urls_file_partial": "Text file upload was interrupted.",
+  "err.upload_no_tmp_dir": "Temporary folder missing on server.",
+  "err.upload_cant_write": "Unable to write uploaded file to disk.",
+  "err.upload_blocked_extension": "Upload blocked by a PHP extension.",
+  "err.scrape_urls_file_unknown": "Unknown error while uploading text file.",
+  "err.scrape_urls_file_invalid": "Invalid text file.",
+  "err.scrape_urls_file_type": "The links file must be a text file (.txt, .csv, .list).",
+  "err.scrape_urls_file_read": "Unable to read uploaded text file.",
 
   "warn.maybe_truncated": "Warning: selection may have been truncated by PHP max_file_uploads=%d. For many files, use a ZIP.",
 
@@ -80,42 +107,83 @@
 
   "misc.no_image": "—",
   "misc.loading": "Loading…",
-  "misc.attached_system_added": ", system entry added: %s"
-  ,"heading.current_state": "Current state"
-  ,"stats.systems": "Systems: %d entr(y/ies)"
-  ,"stats.platforms_loaded": "Platforms loaded: %d file(s)"
-  ,"stats.images_in_zip": "Images: %d file(s) in ZIP"
-  ,"placeholder.platform_name": "Platform name"
-  ,"scrape.import_label": "Import DATA ZIP (file or URL)"
-  ,"scrape.expected_content": "Expected content: systems_list.json, games/*.json, images/*"
-  ,"scrape.urls_placeholder": "Paste URLs (1fichier / archive.org / torrent)"
-  ,"scrape.supported": "Supported: https://archive.org/download/*, https://1fichier.com/?*, https://lolroms.com/*, direct .torrent links."
-  ,"scrape.password_label": "Password (1fichier - optional)"
-  ,"scrape.password_placeholder": "Leave empty if not needed"
-  ,"scrape.password_help": "If the 1fichier URL is a protected folder, the typed password takes priority. Otherwise the scraper automatically tries `assets/pwd.json` ([PW] in debug)."
-  ,"btn.attach_all": "ADD ALL"
-  ,"btn.attach_all_replace": "REPLACE ALL"
-  ,"scrape.results": "Results"
-  ,"scrape.total_links_label": "Total links"
-  ,"scrape.total_size_label": "Total size"
-  ,"scrape.source": "Source"
-  ,"scrape.files_count": "%d file(s)"
-  ,"scrape.urls_label": "URLs or HTML"
-  ,"placeholder.select_platform": "Platform..."
-  ,"placeholder.select_folder": "Folder..."
-  ,"placeholder.platform_image_existing": "Select an existing image..."
-  ,"placeholder.new_platform_name": "New platform"
-  ,"placeholder.new_folder": "New folder"
-  ,"scrape.attach_target_help": "Choose an existing platform or type a new one."
-  ,"scrape.attach_all_title": "Add all links in the same platform"
-  ,"scrape.attach_single_title": "Choose a platform for current link"
-  ,"label.games": "Games"
-  ,"label.actions": "Actions"
-  ,"btn.add_game": "Add a game"
-  ,"btn.clean_games": "Clean games"
-  ,"label.games_of_platform": "Games of %s (%d)"
-  ,"desc.zip_content": "The ZIP will contain systems_list.json at the root, an images/ folder and a games/ folder with your platform files."
-  ,"label.sort_order": "Sort order"
-  ,"sort.original": "Original order"
-  ,"sort.alphabetical": "Alphabetical (A-Z)"
+  "misc.loading_games": "Loading games...",
+  "misc.attached_system_added": ", system entry added: %s",
+
+  "heading.current_state": "Current state",
+  "stats.systems": "Systems: %d entr(y/ies)",
+  "stats.platforms_loaded": "Platforms loaded: %d file(s)",
+  "stats.images_in_zip": "Images: %d file(s) in ZIP",
+  "stats.images": "Images: %d file(s)",
+
+  "placeholder.platform_name": "Platform name",
+  "placeholder.select_generic": "Select...",
+  "placeholder.select_platform": "Platform...",
+  "placeholder.select_folder": "Folder...",
+  "placeholder.platform_image_existing": "Select an existing image...",
+  "placeholder.new_platform_name": "New platform",
+  "placeholder.new_folder": "New folder",
+  "placeholder.game_name": "File name",
+  "placeholder.game_size": "467.4M",
+  "placeholder.platform_image_keep_current": "Keep current image",
+
+  "scrape.import_label": "Import DATA ZIP (file or URL)",
+  "scrape.expected_content": "Expected content: systems_list.json, games/*.json, images/*",
+  "scrape.urls_placeholder": "Paste URLs (1fichier / archive.org / torrent)",
+  "scrape.supported": "Supported: https://archive.org/download/*, https://1fichier.com/?*, https://lolroms.com/*, direct .torrent links.",
+  "scrape.password_label": "Password (1fichier - optional)",
+  "scrape.password_placeholder": "Leave empty if not needed",
+  "scrape.password_help": "If the 1fichier URL is a protected folder, the typed password takes priority. Otherwise the scraper automatically tries `assets/pwd.json` ([PW] in debug).",
+  "scrape.results": "Results",
+  "scrape.total_links_label": "Total links",
+  "scrape.total_size_label": "Total size",
+  "scrape.source": "Source",
+  "scrape.files_count": "%d file(s)",
+  "scrape.urls_label": "URLs or HTML",
+  "scrape.urls_file_label": "Links text file",
+  "scrape.urls_file_help": "Import a text file containing one link per line, or rows in the format name|title_id|url.",
+  "scrape.attach_target_help": "Choose an existing platform or type a new one.",
+  "scrape.attach_all_title": "Add all links in the same platform",
+  "scrape.attach_single_title": "Choose a platform for current link",
+
+  "desc.zip_content": "The ZIP will contain systems_list.json at the root, an images/ folder and a games/ folder with your platform files.",
+  "help.platform_image_priority": "Choose an existing image or upload a new one. A new upload replaces the selection.",
+  "overlay.loading_title": "Loading...",
+  "overlay.please_wait": "Please wait.",
+  "overlay.download_zip": "Download ZIP",
+  "zip.preparing_data": "Preparing package data...",
+  "zip.add_systems": "Adding systems_list.json...",
+  "zip.add_games": "Adding game lists...",
+  "zip.add_images": "Adding images...",
+  "zip.generate_caches": "Generating embedded caches...",
+  "zip.finalizing": "Finalizing ZIP archive...",
+  "zip.ready_transfer": "ZIP ready, sending to browser...",
+  "zip.ready_title": "ZIP ready",
+  "zip.ready_message": "The file is ready. If the download does not start, use the button below.",
+  "zip.ready_success": "Archive generated successfully.",
+  "zip.default_filename": "games.zip",
+  "zip.state_preparing_title": "Preparing ZIP...",
+  "zip.state_systems_title": "Adding systems...",
+  "zip.state_games_title": "Adding game lists...",
+  "zip.state_images_title": "Adding images...",
+  "zip.state_cache_title": "Generating caches...",
+  "zip.state_finalizing_title": "Finalizing ZIP...",
+  "zip.state_downloading_title": "Download ready...",
+  "zip.state_error_title": "Generation error",
+  "zip.state_default_title": "Generating ZIP...",
+
+  "modal.image_preview": "Image preview",
+  "tooltip.view_image": "View image",
+
+  "sort.original": "Original order",
+  "sort.alphabetical": "Alphabetical (A-Z)",
+  "scrape.cookies_placeholder": "cf_clearance=...; iax=...; logged-in-sig=...",
+  "scrape.cookies_help": "Copy the Cookie header from your browser if the content is restricted. For sites protected by Cloudflare (lolroms.com\u2026), copy the cf_clearance cookie.",
+  "scrape.cookies_remember": "Remember this cookie for the session",
+  "overlay.loading": "Loading\u2026",
+  "overlay.processing": "Processing\u2026",
+  "overlay.zip_generating": "Generating ZIP\u2026",
+  "overlay.zip_preparing": "Preparing files, generating caches and compressing.",
+  "overlay.json_preparing": "Preparing JSON\u2026",
+  "overlay.json_exporting": "Exporting system list."
 }
