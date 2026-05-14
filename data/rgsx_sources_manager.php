@@ -388,6 +388,33 @@ function normalize_url_like(string $u): string {
   return str_replace(' ', '%20', $u);
 }
 
+function normalize_archiveorg_scrape_url(string $url): string {
+  $normalized = normalize_url_like(trim($url));
+  if ($normalized === '' || !is_url($normalized)) {
+    return $normalized;
+  }
+
+  $parts = @parse_url($normalized);
+  if (!$parts || empty($parts['host'])) {
+    return $normalized;
+  }
+
+  $host = strtolower((string)$parts['host']);
+  if ($host !== 'archive.org' && $host !== 'www.archive.org') {
+    return $normalized;
+  }
+
+  $path = (string)($parts['path'] ?? '');
+  if (preg_match('#^/details/([^/?#]+)#i', $path, $m)) {
+    $identifier = trim((string)$m[1]);
+    if ($identifier !== '') {
+      return 'https://archive.org/download/' . rawurlencode(rawurldecode($identifier));
+    }
+  }
+
+  return $normalized;
+}
+
 function rgsx_pwd_json_path(): string {
   return __DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'pwd.json';
 }
@@ -1761,22 +1788,72 @@ function expand_vimm_platform_url(string $url): array {
 }
 
 function resolve_url(string $base, string $href): string {
-  if (strpos($href, '//') === 0) return 'https:' . $href;
+  $href = trim(html_entity_decode($href, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+  if ($href === '') return '';
+
+  // Keep fully-qualified URLs unchanged.
+  if (preg_match('#^[a-z][a-z0-9+.-]*://#i', $href)) {
+    return normalize_url_like($href);
+  }
+
+  // Protocol-relative URL (e.g. //cdn.example.com/file).
+  if (strpos($href, '//') === 0) {
+    $scheme = parse_url($base, PHP_URL_SCHEME);
+    if (!is_string($scheme) || $scheme === '') { $scheme = 'https'; }
+    return normalize_url_like($scheme . ':' . $href);
+  }
+
+  // Keep non-http URI schemes untouched (magnet:, mailto:, etc.).
+  if (preg_match('#^[a-z][a-z0-9+.-]*:#i', $href)) {
+    return $href;
+  }
+
   $bp = @parse_url($base);
   if (!$bp || empty($bp['scheme']) || empty($bp['host'])) {
     // Best-effort concat
     if ($href[0] === '/') return $href;
     return rtrim($base, '/') . '/' . ltrim($href, '/');
   }
-  $scheme = $bp['scheme']; $host = $bp['host']; $port = isset($bp['port']) ? (':' . $bp['port']) : '';
-  $basePath = $bp['path'] ?? '/';
-  if ($href[0] === '/') {
+
+  $scheme = $bp['scheme'];
+  $auth = '';
+  if (isset($bp['user'])) {
+    $auth .= $bp['user'];
+    if (isset($bp['pass'])) { $auth .= ':' . $bp['pass']; }
+    $auth .= '@';
+  }
+  $host = $bp['host'];
+  $port = isset($bp['port']) ? (':' . $bp['port']) : '';
+  $basePath = (string)($bp['path'] ?? '/');
+
+  $query = '';
+  $fragment = '';
+  if ($href[0] === '?') {
+    $path = $basePath;
+    $query = substr($href, 1);
+  } elseif ($href[0] === '#') {
+    $path = $basePath;
+    $query = (string)($bp['query'] ?? '');
+    $fragment = substr($href, 1);
+  } elseif ($href[0] === '/') {
     $path = $href;
   } else {
     // Join with base directory
-    $dir = substr($basePath, 0, strrpos($basePath, '/') !== false ? strrpos($basePath, '/') + 1 : 0);
+    $lastSlash = strrpos($basePath, '/');
+    $dir = $lastSlash !== false ? substr($basePath, 0, $lastSlash + 1) : '/';
     $path = $dir . $href;
   }
+
+  // If the relative href embeds query/fragment, split them out before normalizing path segments.
+  if (strpos($path, '#') !== false) {
+    [$path, $inlineFragment] = explode('#', $path, 2);
+    if ($fragment === '') { $fragment = $inlineFragment; }
+  }
+  if (strpos($path, '?') !== false) {
+    [$path, $inlineQuery] = explode('?', $path, 2);
+    if ($query === '') { $query = $inlineQuery; }
+  }
+
   // Normalize /./ and /../
   $parts = [];
   foreach (explode('/', $path) as $seg) {
@@ -1785,7 +1862,12 @@ function resolve_url(string $base, string $href): string {
     $parts[] = $seg;
   }
   $pathNorm = '/' . implode('/', $parts);
-  return $scheme . '://' . $host . $port . $pathNorm;
+
+  $rebuilt = $scheme . '://' . $auth . $host . $port . $pathNorm;
+  if ($query !== '') { $rebuilt .= '?' . $query; }
+  if ($fragment !== '') { $rebuilt .= '#' . $fragment; }
+
+  return normalize_url_like($rebuilt);
 }
 
 // HTTP range fetch (binary-safe), returns [ok,status,body,error,headers]
@@ -2165,7 +2247,7 @@ function parse_classic_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validE
                 if ($fileName === "Parent directory/") continue;
                 $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
                 if (in_array($extension, $validExtensions)) {
-                    $fullUrl = $isUrl ? (rtrim($urlOrFragment, '/') . '/' . ltrim($href, '/')) : $href;
+                  $fullUrl = $isUrl ? resolve_url($urlOrFragment, $href) : $href;
                     $result[] = [$fileName, $fullUrl, $fileSize];
                 }
             }
@@ -2418,6 +2500,56 @@ function parse_edgeemu_net_letter_page($dom, $sourceLabel, $urlOrFragment, $vali
   }
   return $result;
 }
+
+function parse_retrogamesets_torrents($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  if (!$isUrl) {
+    return [];
+  }
+
+  $host = strtolower((string)parse_url($urlOrFragment, PHP_URL_HOST));
+  $path = (string)parse_url($urlOrFragment, PHP_URL_PATH);
+  if (($host !== 'retrogamesets.fr' && $host !== 'www.retrogamesets.fr') || stripos($path, '/thomsonito_torrents') !== 0) {
+    return [];
+  }
+
+  $rows = [];
+  foreach ($dom->getElementsByTagName('tr') as $tr) {
+    $a = $tr->getElementsByTagName('a')->item(0);
+    if (!$a) {
+      continue;
+    }
+
+    $href = trim((string)$a->getAttribute('href'));
+    if ($href === '' || stripos($href, '.torrent') === false) {
+      continue;
+    }
+
+    $decodedName = urldecode(basename((string)parse_url($href, PHP_URL_PATH)));
+    $name = $decodedName !== '' ? $decodedName : trim((string)$a->textContent);
+    if ($name === '') {
+      continue;
+    }
+
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    if ($ext !== 'torrent' || !in_array($ext, $validExtensions, true)) {
+      continue;
+    }
+
+    $size = '';
+    foreach ($tr->getElementsByTagName('td') as $td) {
+      $tdClass = strtolower((string)$td->getAttribute('class'));
+      if (strpos($tdClass, 'indexcolsize') !== false) {
+        $size = trim((string)$td->textContent);
+        break;
+      }
+    }
+
+    $rows[] = [$name, resolve_url($urlOrFragment, $href), $size];
+  }
+
+  return $rows;
+}
+
 function parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
   $out = [];
   foreach ($dom->getElementsByTagName('a') as $a) {
@@ -2748,6 +2880,11 @@ function parse_auto($html, $sourceLabel, $isUrl, $urlOrFragment, $validExtension
     $edgeEmuRes = parse_edgeemu_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
     if ($edgeEmuRes) return $edgeEmuRes;
   }
+  // Dedicated parser for retrogamesets Thomsonito torrents list
+  if ($isUrl && preg_match('#^https?://(?:www\.)?retrogamesets\.fr/thomsonito_torrents(?:/|\?|$)#i', $urlOrFragment)) {
+    $rgsRes = parse_retrogamesets_torrents($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($rgsRes) return $rgsRes;
+  }
   // Last resort: generic link scan
   $g = parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
   return $g;
@@ -2765,7 +2902,7 @@ $activeTab = $_POST['active_tab'] ?? $_GET['active_tab'] ?? $_SESSION['active_ta
 $message = '';
 $error = '';
 $allowedExtensions = [
-    '40t','68k','7z','a0','a26','a52','a78','abs','actionmax','adf','adl','adm','ads','adz','app','apd','atr','atm','atx','auto','axf','b0','bat','bg1','bg2','bbc','bin','bml','boom3','bs','bsx','c','cas','cbn','ccc','cci','ccd','cdi','cdm','cdg','cdr','chd','cmd','cof','col','cqm','cqi','croft','crt','cso','csw','cue','d64','d77','d81','d88','daphne','dat','ddp','dfi','dim','dk','dms','dol','dos','dosbox','dosz','dsk','dup','dx1','dx2','easyrpg','eduke32','elf','exe','fba','fds','fig','fpt','frd','g64','gam','game','gbc','gcz','gd3','gd7','gdi','gem','gen','gg','gz','hb','hdf','hdm','hex','hfe','how','hypseus','ikemen','ima','img','int','ipf','ipk3','iso','iwd','iwd2','j64','jag','jfd','kip','lbd','lha','libretro','lnk','love','lua','lutro','lux','lx','m3u','m3u8','m5','m7','md','mdf','mds','mfi','mfm','mgw','min','msa','mugen','mx1','mx2','n64','nca','ndd','neo','nes','nib','nrg','nro','nso','nx','ogv','p','p8','pak','pb','pbp','pc','pce','pk3','png','po','prg','prx','pst','psv','pxp','rar','raze','rem','ri','rom','rp9','rpk','rpx','rsdk','rvz','sbw','sc','scummvm','sfc','sg','sgd','smc','sms','solarus','squashfs','st','sv','swf','swc','symbian','t64','t77','table','tap','tar','tfd','tgc','tic','toc','txt','u88','uae','uef','ufi','uze','v32','v64','vb','vboy','vec','vpk','vpx','wad','wav','wbfs','wia','win','windows','wine','wsquashfs','woz','ws','wsc','wua','wud','wux','xbe','xcp','xci','xdf','xex','xfd','zip','zar','zcxi','zso'
+  '40t','68k','7z','a0','a26','a52','a78','abs','actionmax','adf','adl','adm','ads','adz','app','apd','atr','atm','atx','auto','axf','b0','bat','bg1','bg2','bbc','bin','bml','boom3','bs','bsx','c','cas','cbn','ccc','cci','ccd','cdi','cdm','cdg','cdr','chd','cmd','cof','col','cqm','cqi','croft','crt','cso','csw','cue','d64','d77','d81','d88','daphne','dat','ddp','dfi','dim','dk','dms','dol','dos','dosbox','dosz','dsk','dup','dx1','dx2','easyrpg','eduke32','elf','exe','fba','fds','fig','fpkg','fpt','frd','g64','gam','game','gbc','gcz','gd3','gd7','gdi','gem','gen','gg','gz','hb','hdf','hdm','hex','hfe','how','hypseus','ikemen','ima','img','int','ipf','ipk3','iso','iwd','iwd2','j64','jag','jfd','kip','lbd','lha','libretro','lnk','love','lua','lutro','lux','lx','m3u','m3u8','m5','m7','md','mdf','mds','mfi','mfm','mgw','min','msa','mugen','mx1','mx2','n64','nca','ndd','neo','nes','nib','nrg','nro','nso','nx','ogv','p','p8','pak','pb','pbp','pc','pce','pk3','pkg','png','po','prg','prx','pst','psv','pxp','rar','raze','rem','ri','rom','rp9','rpk','rpx','rsdk','rvz','sbw','sc','scummvm','sfc','sg','sgd','smc','sms','solarus','squashfs','st','sv','swf','swc','symbian','t64','t77','table','tap','tar','tfd','tgc','tic','toc','torrent','txt','u88','uae','uef','ufi','uze','v32','v64','vb','vboy','vec','vpk','vpx','wad','wav','wbfs','wia','win','windows','wine','wsquashfs','woz','ws','wsc','wua','wud','wux','xbe','xcp','xci','xdf','xex','xfd','zip','zar','zcxi','zso'
 ];
 
 if ($action !== '') {
@@ -2909,6 +3046,7 @@ try {
       }
       $pipedRows = [];
       $uploadedRows = [];
+      $uploadedIgnoredExtensions = [];
       $remainingInputs = [];
       foreach ($inputs as $line) {
         $parsedPipedRow = parse_piped_source_row($line, $validExtensions);
@@ -2927,9 +3065,25 @@ try {
         $parsedDirectUrlRow = parse_direct_source_url_row($line, $validExtensions);
         if (is_array($parsedDirectUrlRow)) {
           $uploadedRows[] = $parsedDirectUrlRow;
+          continue;
+        }
+        if (is_url($line)) {
+          $linePath = parse_url((string)$line, PHP_URL_PATH);
+          $lineExt = is_string($linePath) ? strtolower(pathinfo($linePath, PATHINFO_EXTENSION)) : '';
+          if ($lineExt !== '') {
+            $uploadedIgnoredExtensions[$lineExt] = true;
+          }
         }
       }
       $inputs = $remainingInputs;
+      if (empty($pipedRows) && empty($uploadedRows) && empty($inputs)) {
+        $error = t('err.scrape_no_recognized_input', 'No recognizable entries were found in the text/file. Expected direct URLs or name|title_id|url lines.');
+        if (!empty($uploadedIgnoredExtensions)) {
+          $detectedExts = implode(', ', array_slice(array_keys($uploadedIgnoredExtensions), 0, 10));
+          $error .= ' ' . t('err.scrape_detected_exts', 'Detected extensions') . ': ' . $detectedExts . '.';
+        }
+        break;
+      }
       // Normalize schemeless Archive.org lines to valid URLs
       $inputs = array_map(function($line){
         if ($line === '') return $line;
@@ -2993,6 +3147,9 @@ try {
       // Apply URL normalization only to actual URLs, never to pasted HTML blocks.
       $inputs = array_map(function($line) {
         return is_html_block($line) ? $line : normalize_url_like($line);
+      }, $inputs);
+      $inputs = array_map(function($line) {
+        return is_html_block($line) ? $line : normalize_archiveorg_scrape_url($line);
       }, $inputs);
       foreach ($inputs as $index => $input) {
         $isUrl = is_url($input);
