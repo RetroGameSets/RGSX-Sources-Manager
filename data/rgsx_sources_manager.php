@@ -325,14 +325,14 @@ function parse_piped_source_row(string $line, array $validExtensions): ?array {
   return [$name, normalize_url_like($url), $size];
 }
 
-function parse_direct_source_url_row(string $line, array $validExtensions): ?array {
+function parse_direct_source_url_row(string $line, array $validExtensions, array $torrentExtensions = []): ?array {
   $line = trim($line);
   if ($line === '' || strpos($line, '|') !== false || !is_url($line)) {
     return null;
   }
 
   if (is_torrent_url($line)) {
-    return build_torrent_source_row($line);
+    return null; // handled separately with immediate expansion
   }
 
   $normalizedUrl = normalize_url_like($line);
@@ -526,13 +526,36 @@ function is_torrent_url(string $url): bool {
   return is_string($path) && preg_match('/\.torrent$/i', $path) === 1;
 }
 
-function build_torrent_source_row(string $url): array {
+function build_torrent_source_row(string $url, array $extensions = []): array {
   $path = parse_url($url, PHP_URL_PATH);
   $label = is_string($path) ? urldecode(basename($path)) : '';
   if ($label === '' || $label === '.' || $label === '..') {
     $label = 'source.torrent';
   }
-  return [$label, $url, 'TORRENT'];
+  $row = [$label, $url, 'TORRENT'];
+  if (!empty($extensions)) { $row[] = array_values($extensions); }
+  return $row;
+}
+
+function rgsx_torrent_entries_to_rows(array $entries, string $sourceUrl, array $extensions = []): array {
+  $rows = [];
+  foreach ($entries as $entry) {
+    $gameName = trim((string)($entry['name'] ?? ''));
+    if ($gameName === '') { continue; }
+    if (!empty($extensions)) {
+      $ext = strtolower(pathinfo($gameName, PATHINFO_EXTENSION));
+      if ($ext === '' || !in_array($ext, $extensions, true)) { continue; }
+    }
+    $sizeBytes = (int)($entry['size_bytes'] ?? 0);
+    $fileIndex = (int)($entry['index'] ?? 1);
+    $relativePath = (string)($entry['download_path'] ?? $entry['path'] ?? $gameName);
+    $rows[] = [
+      $gameName,
+      rgsx_build_torrent_download_url($sourceUrl, $fileIndex, $relativePath, $sizeBytes),
+      $sizeBytes > 0 ? rgsx_format_size_bytes($sizeBytes) : '',
+    ];
+  }
+  return $rows;
 }
 
 function rgsx_zip_progress_path(?string $progressKey = null): string {
@@ -667,7 +690,8 @@ function rgsx_extract_torrent_source($item): ?array {
       $sourceName = trim((string)($item[0] ?? ''));
       $sourceUrl = isset($item[1]) && is_string($item[1]) ? trim($item[1]) : '';
       if ($sourceUrl !== '' && is_torrent_url($sourceUrl)) {
-        return [$sourceName, $sourceUrl];
+        $extensions = (isset($item[3]) && is_array($item[3])) ? $item[3] : [];
+        return [$sourceName, $sourceUrl, $extensions];
       }
       return null;
     }
@@ -687,7 +711,8 @@ function rgsx_extract_torrent_source($item): ?array {
         $path = parse_url($sourceUrl, PHP_URL_PATH);
         $sourceName = is_string($path) ? urldecode(basename($path)) : '';
       }
-      return [$sourceName, $sourceUrl];
+      $extensions = (isset($item['extensions']) && is_array($item['extensions'])) ? $item['extensions'] : [];
+      return [$sourceName, $sourceUrl, $extensions];
     }
   }
   return null;
@@ -818,7 +843,7 @@ function rgsx_build_platform_search_entries_php(array $rows, array &$torrentMani
   foreach ($rows as $item) {
     $torrentSource = rgsx_extract_torrent_source($item);
     if (is_array($torrentSource)) {
-      [$sourceName, $sourceUrl] = $torrentSource;
+      [$sourceName, $sourceUrl, $torrentExtensions] = $torrentSource;
       if (!isset($torrentManifestCache[$sourceUrl]) || !is_array($torrentManifestCache[$sourceUrl])) {
         try {
           $torrentManifestCache[$sourceUrl] = rgsx_fetch_torrent_entries_php($sourceUrl);
@@ -830,6 +855,11 @@ function rgsx_build_platform_search_entries_php(array $rows, array &$torrentMani
       foreach ($torrentManifestCache[$sourceUrl] as $torrentEntry) {
         $gameName = trim((string)($torrentEntry['name'] ?? ''));
         if ($gameName === '') { continue; }
+        // Filter by stored extensions if any were set at scrape time
+        if (!empty($torrentExtensions)) {
+          $entryExt = strtolower(pathinfo($gameName, PATHINFO_EXTENSION));
+          if ($entryExt === '' || !in_array($entryExt, $torrentExtensions, true)) { continue; }
+        }
         $sizeBytes = (int)($torrentEntry['size_bytes'] ?? 0);
         $fileIndex = (int)($torrentEntry['index'] ?? 1);
         $relativePath = (string)($torrentEntry['download_path'] ?? $torrentEntry['path'] ?? $gameName);
@@ -905,7 +935,7 @@ function rgsx_build_platform_search_entries_php(array $rows, array &$torrentMani
 }
 
 function generate_embedded_rgsx_caches_php(array $platformGames, string $outputDir, string $tempRoot): array {
-  $torrentManifestCache = [];
+  $torrentManifestCache = [];  // kept for TORRENT-row backward compat only, no longer written
   $platformCountCache = [];
   $globalSearchIndex = [];
   $warnings = [];
@@ -927,17 +957,15 @@ function generate_embedded_rgsx_caches_php(array $platformGames, string $outputD
     $globalSearchIndex = array_merge($globalSearchIndex, $platformEntries);
   }
 
-  $torrentCachePath = $outputDir . DIRECTORY_SEPARATOR . 'torrent_manifest_cache.json';
   $platformCachePath = $outputDir . DIRECTORY_SEPARATOR . 'platform_games_count_cache.json';
   $globalSearchIndexPath = $outputDir . DIRECTORY_SEPARATOR . 'global_search_index.json';
-  @file_put_contents($torrentCachePath, json_encode(['version' => 1, 'entries' => $torrentManifestCache], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
   @file_put_contents($platformCachePath, json_encode(['version' => 2, 'entries' => $platformCountCache], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
   @file_put_contents($globalSearchIndexPath, json_encode(['version' => 1, 'entries' => $globalSearchIndex], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
   return [
-    'ok' => is_file($torrentCachePath) || is_file($platformCachePath) || is_file($globalSearchIndexPath),
+    'ok' => is_file($platformCachePath) || is_file($globalSearchIndexPath),
     'temp_root' => $tempRoot,
-    'torrent_cache' => is_file($torrentCachePath) ? $torrentCachePath : '',
+    'torrent_cache' => '',
     'platform_cache' => is_file($platformCachePath) ? $platformCachePath : '',
     'global_search_index' => is_file($globalSearchIndexPath) ? $globalSearchIndexPath : '',
     'stdout' => '',
@@ -980,13 +1008,12 @@ function generate_embedded_rgsx_caches(array $platformGames): array {
     $lastOutput = $joinedOutput;
     $lastExitCode = $exitCode;
     if ($exitCode === 0) {
-      $torrentCache = $outputDir . DIRECTORY_SEPARATOR . 'torrent_manifest_cache.json';
       $platformCache = $outputDir . DIRECTORY_SEPARATOR . 'platform_games_count_cache.json';
       $globalSearchIndex = $outputDir . DIRECTORY_SEPARATOR . 'global_search_index.json';
       return [
-        'ok' => is_file($torrentCache) || is_file($platformCache) || is_file($globalSearchIndex),
+        'ok' => is_file($platformCache) || is_file($globalSearchIndex),
         'temp_root' => $tempRoot,
-        'torrent_cache' => is_file($torrentCache) ? $torrentCache : '',
+        'torrent_cache' => '',
         'platform_cache' => is_file($platformCache) ? $platformCache : '',
         'global_search_index' => is_file($globalSearchIndex) ? $globalSearchIndex : '',
         'stdout' => $joinedOutput,
@@ -1607,9 +1634,28 @@ function build_platform_file_name(string $platformName): string {
 
 function get_row_extension($row): string {
   $name = strtolower(trim((string)($row[0] ?? '')));
-  if ($name === '') return '';
-  $ext = pathinfo($name, PATHINFO_EXTENSION);
-  return strtolower(is_string($ext) ? $ext : '');
+  if ($name !== '') {
+    $ext = pathinfo($name, PATHINFO_EXTENSION);
+    if (is_string($ext) && $ext !== '') return strtolower($ext);
+  }
+  // For rgsx+torrent:// URLs, extract extension from the 'path' query parameter
+  $url = trim((string)($row[1] ?? ''));
+  if ($url !== '' && stripos($url, 'rgsx+torrent://') === 0) {
+    $qmark = strpos($url, '?');
+    if ($qmark !== false) {
+      parse_str(substr($url, $qmark + 1), $params);
+      $path = trim((string)($params['path'] ?? ''));
+      if ($path !== '') {
+        $basepath = basename($path);
+        $dot = strrpos($basepath, '.');
+        if ($dot !== false && $dot > 0 && $dot < strlen($basepath) - 1) {
+          $ext = strtolower(substr($basepath, $dot + 1));
+          if ($ext !== '') return $ext;
+        }
+      }
+    }
+  }
+  return '';
 }
 
 function filter_scrape_rows_by_extensions(array $rows, ?array $selectedExtensions): array {
@@ -2017,6 +2063,39 @@ if (isset($_GET['preview_image'])) {
       header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $mtime) . ' GMT');
       header('ETag: ' . $etag);
       header('Cache-Control: public, max-age=604800, immutable');
+      readfile($path);
+      exit;
+    }
+  }
+  http_response_code(404);
+  header('Content-Type: text/plain; charset=UTF-8');
+  echo 'Not found';
+  exit;
+}
+
+// Serve uploaded torrent file from session by name
+if (isset($_GET['serve_torrent'])) {
+  $req = (string)$_GET['serve_torrent'];
+  $name = basename($req); // basic sanitization
+  $torrents = $_SESSION['torrents'] ?? [];
+  foreach ($torrents as $t) {
+    if (isset($t['name']) && $t['name'] === $name && !empty($t['tmp']) && is_readable($t['tmp'])) {
+      $path = $t['tmp'];
+      $size  = @filesize($path) ?: 0;
+      $mtime = @filemtime($path) ?: time();
+      $etag  = 'W/"' . md5($name.'|'.$mtime.'|'.$size) . '"';
+      if ((isset($_SERVER['HTTP_IF_NONE_MATCH']) && trim($_SERVER['HTTP_IF_NONE_MATCH']) === $etag) ||
+          (isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) && strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']) >= $mtime)) {
+        header('HTTP/1.1 304 Not Modified');
+        header('ETag: ' . $etag);
+        exit;
+      }
+      header('Content-Type: application/x-bittorrent');
+      header('Content-Disposition: inline; filename="' . $name . '"');
+      header('Content-Length: ' . $size);
+      header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $mtime) . ' GMT');
+      header('ETag: ' . $etag);
+      header('Cache-Control: no-store');
       readfile($path);
       exit;
     }
@@ -2512,39 +2591,28 @@ function parse_retrogamesets_torrents($dom, $sourceLabel, $isUrl, $urlOrFragment
     return [];
   }
 
+  // The page uses <a class="companion-badge torrent-badge" href="Game.torrent">
+  // Collect all torrent-badge links; the post-processing expansion step will
+  // download + parse each .torrent and replace it with rgsx+torrent:// rows.
   $rows = [];
-  foreach ($dom->getElementsByTagName('tr') as $tr) {
-    $a = $tr->getElementsByTagName('a')->item(0);
-    if (!$a) {
+  foreach ($dom->getElementsByTagName('a') as $a) {
+    $class = strtolower((string)$a->getAttribute('class'));
+    if (strpos($class, 'torrent-badge') === false) {
       continue;
     }
 
     $href = trim((string)$a->getAttribute('href'));
-    if ($href === '' || stripos($href, '.torrent') === false) {
+    if ($href === '' || !preg_match('/\.torrent(\?.*)?$/i', $href)) {
       continue;
     }
 
-    $decodedName = urldecode(basename((string)parse_url($href, PHP_URL_PATH)));
-    $name = $decodedName !== '' ? $decodedName : trim((string)$a->textContent);
-    if ($name === '') {
+    $absUrl = resolve_url($urlOrFragment, $href);
+    $filename = urldecode(basename((string)parse_url($absUrl, PHP_URL_PATH)));
+    if ($filename === '') {
       continue;
     }
 
-    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-    if ($ext !== 'torrent' || !in_array($ext, $validExtensions, true)) {
-      continue;
-    }
-
-    $size = '';
-    foreach ($tr->getElementsByTagName('td') as $td) {
-      $tdClass = strtolower((string)$td->getAttribute('class'));
-      if (strpos($tdClass, 'indexcolsize') !== false) {
-        $size = trim((string)$td->textContent);
-        break;
-      }
-    }
-
-    $rows[] = [$name, resolve_url($urlOrFragment, $href), $size];
+    $rows[] = [$filename, $absUrl, ''];
   }
 
   return $rows;
@@ -2828,7 +2896,25 @@ function parse_archiveorg_zipview($dom, $sourceLabel, $isUrl, $urlOrFragment, $v
 function parse_auto($html, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
     global $__parse_debug__;
     $__parse_debug__ = '';
-    
+
+    // --- JSON feed: server returns [[name, url, size], ...] directly ---
+    // Covers any URL whose response is a JSON array of [string, string, ?string] rows,
+    // e.g. a server-side rgsx_feed.php that pre-expands local .torrent files.
+    if ($isUrl && $html !== '') {
+        $trimmed = ltrim($html);
+        if (isset($trimmed[0]) && $trimmed[0] === '[') {
+            $decoded = @json_decode($trimmed, true);
+            if (is_array($decoded) && count($decoded) > 0) {
+                $first = reset($decoded);
+                if (is_array($first) && count($first) >= 2
+                    && is_string($first[0] ?? null) && is_string($first[1] ?? null)) {
+                    $__parse_debug__ = 'JSON feed: ' . count($decoded) . ' entries.';
+                    return $decoded;
+                }
+            }
+        }
+    }
+
     $dom = new DOMDocument();
     libxml_use_internal_errors(true);
     @$dom->loadHTML($html);
@@ -3019,6 +3105,64 @@ try {
         break;
       }
       $uploadedInputs = $uploadedUrls !== '' ? array_values(array_filter(array_map('trim', preg_split('/\n+/', $uploadedUrls)))) : [];
+      // Compute valid extensions early so torrent rows can store them
+      $exts = isset($_POST['extensions']) ? array_map('strtolower', (array)$_POST['extensions']) : $allowedExtensions;
+      $validExtensions = array_values(array_intersect($exts, $allowedExtensions));
+      // Torrent-specific extension override: comma-separated field takes priority for torrent rows
+      $torrentExtensionsRaw = trim((string)($_POST['torrent_extensions'] ?? ''));
+      if ($torrentExtensionsRaw !== '') {
+        $torrentValidExtensions = array_values(array_filter(array_map(function($e) { return strtolower(trim($e, ' .')); }, preg_split('/[,;\s]+/', $torrentExtensionsRaw)), fn($e) => $e !== ''));
+      } else {
+        $torrentValidExtensions = $validExtensions;
+      }
+      // Handle uploaded .torrent file
+      $uploadedTorrentRows = [];
+      if (isset($_FILES['torrent_file']) && is_array($_FILES['torrent_file']) && (int)($_FILES['torrent_file']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
+        $torrentUpload = $_FILES['torrent_file'];
+        $torrentOrigName = basename(trim((string)($torrentUpload['name'] ?? '')));
+        $torrentTmpPath  = (string)($torrentUpload['tmp_name'] ?? '');
+        if ($torrentOrigName === '' || $torrentTmpPath === '' || !is_readable($torrentTmpPath)) {
+          $error = t('err.torrent_upload_invalid', 'Invalid torrent file upload.');
+          break;
+        }
+        if (strtolower(pathinfo($torrentOrigName, PATHINFO_EXTENSION)) !== 'torrent') {
+          $error = t('err.torrent_upload_type', 'The uploaded file must be a .torrent file.');
+          break;
+        }
+        $torrentBytes = @file_get_contents($torrentTmpPath);
+        if ($torrentBytes === false || $torrentBytes === '') {
+          $error = t('err.torrent_upload_read', 'Unable to read uploaded torrent file.');
+          break;
+        }
+        // Store torrent in session temp dir so it can be served back via ?serve_torrent=
+        $torrentDestDir = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'rgsx_torrents_' . session_id();
+        if (!is_dir($torrentDestDir)) { @mkdir($torrentDestDir, 0700, true); }
+        $safeTorrentName = preg_replace('/[^\w\-.]+/u', '_', $torrentOrigName);
+        $torrentDestPath = $torrentDestDir . DIRECTORY_SEPARATOR . $safeTorrentName;
+        if (!@file_put_contents($torrentDestPath, $torrentBytes)) {
+          $error = t('err.torrent_upload_write', 'Unable to store uploaded torrent file.');
+          break;
+        }
+        if (!isset($_SESSION['torrents'])) { $_SESSION['torrents'] = []; }
+        // Avoid duplicates
+        $alreadyStored = false;
+        foreach ($_SESSION['torrents'] as $t) { if ($t['name'] === $safeTorrentName) { $alreadyStored = true; break; } }
+        if (!$alreadyStored) { $_SESSION['torrents'][] = ['name' => $safeTorrentName, 'tmp' => $torrentDestPath]; }
+        // Build serve URL for this torrent (reachable by RGSX on same machine for actual downloads)
+        $scheme = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http');
+        $host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $selfScript = $_SERVER['SCRIPT_NAME'] ?? '';
+        $torrentServeUrl = $scheme . '://' . $host . $selfScript . '?serve_torrent=' . rawurlencode($safeTorrentName);
+        // Expand entries immediately
+        try {
+          $torrentEntries = rgsx_extract_torrent_entries_from_bytes($torrentBytes, $torrentServeUrl);
+          $expandedRows = rgsx_torrent_entries_to_rows($torrentEntries, $torrentServeUrl, $torrentValidExtensions);
+          $uploadedTorrentRows = array_merge($uploadedTorrentRows, $expandedRows);
+        } catch (Throwable $torrentExc) {
+          $error = t('err.torrent_parse_failed', 'Unable to parse torrent file: ') . $torrentExc->getMessage();
+          break;
+        }
+      }
       $scrapePassword = trim($_POST['scrape_password'] ?? '');
       $scrapeCookies = trim($_POST['scrape_cookies'] ?? ($_SESSION['scrape_cookies'] ?? ''));
       $rememberCookies = !empty($_POST['remember_cookies']);
@@ -3030,11 +3174,8 @@ try {
         // explicit uncheck clears stored cookies
         unset($_SESSION['scrape_cookies']);
       }
-      // By default, allow all known extensions (not only zip)
-      $exts = isset($_POST['extensions']) ? array_map('strtolower', (array)$_POST['extensions']) : $allowedExtensions;
-      $validExtensions = array_values(array_intersect($exts, $allowedExtensions));
-      if (!$urls && empty($uploadedInputs)) { $error = 'Entrée vide.'; break; }
-      if (!$validExtensions) { $error = 'Aucune extension valide.'; break; }
+      if (!$urls && empty($uploadedInputs) && empty($uploadedTorrentRows)) { $error = 'Entrée vide.'; break; }
+      if (!$validExtensions && empty($uploadedTorrentRows)) { $error = 'Aucune extension valide.'; break; }
       // Detect URL-encoded HTML (e.g. %20 instead of spaces from browser copy) and decode it
       if (strpos($urls, '%20') !== false && preg_match('/<[a-zA-Z]/', urldecode($urls))) {
         $urls = urldecode($urls);
@@ -3062,7 +3203,18 @@ try {
           $uploadedRows[] = $parsedPipedRow;
           continue;
         }
-        $parsedDirectUrlRow = parse_direct_source_url_row($line, $validExtensions);
+        // Expand torrent URLs immediately
+        if (is_url($line) && is_torrent_url($line)) {
+          try {
+            $tfEntries = rgsx_fetch_torrent_entries_php($line);
+            $tfRows = rgsx_torrent_entries_to_rows($tfEntries, $line, $torrentValidExtensions);
+            foreach ($tfRows as $tfRow) { $uploadedRows[] = $tfRow; }
+          } catch (Throwable $tfExc) {
+            // Ignore and treat as unrecognized line
+          }
+          continue;
+        }
+        $parsedDirectUrlRow = parse_direct_source_url_row($line, $validExtensions, $torrentValidExtensions);
         if (is_array($parsedDirectUrlRow)) {
           $uploadedRows[] = $parsedDirectUrlRow;
           continue;
@@ -3076,7 +3228,7 @@ try {
         }
       }
       $inputs = $remainingInputs;
-      if (empty($pipedRows) && empty($uploadedRows) && empty($inputs)) {
+      if (empty($pipedRows) && empty($uploadedRows) && empty($inputs) && empty($uploadedTorrentRows)) {
         $error = t('err.scrape_no_recognized_input', 'No recognizable entries were found in the text/file. Expected direct URLs or name|title_id|url lines.');
         if (!empty($uploadedIgnoredExtensions)) {
           $detectedExts = implode(', ', array_slice(array_keys($uploadedIgnoredExtensions), 0, 10));
@@ -3119,6 +3271,26 @@ try {
           'valid_extensions_count' => count($validExtensions),
           'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
           'parse_debug' => 'Direct piped rows ingested without remote fetch.',
+          'raw_sample' => '',
+          'error_log' => '',
+          'html' => ''
+        ];
+      }
+      if (!empty($uploadedTorrentRows)) {
+        $scraped[] = ['label' => 'Uploaded torrent file', 'rows' => $uploadedTorrentRows];
+        $debugHtmls[] = [
+          'label' => 'Uploaded torrent file',
+          'status' => 200,
+          'error' => '',
+          'effective_url' => '',
+          'parsed_count' => count($uploadedTorrentRows),
+          'link_count' => 0,
+          'table_count' => 0,
+          'password_debug' => '',
+          'cookies' => '',
+          'valid_extensions_count' => count($torrentValidExtensions),
+          'extensions_sample' => implode(', ', array_slice($torrentValidExtensions, 0, 20)),
+          'parse_debug' => 'Torrent file expanded immediately: ' . count($uploadedTorrentRows) . ' entries after extension filter (' . (empty($torrentValidExtensions) ? 'all' : implode(', ', $torrentValidExtensions)) . ').',
           'raw_sample' => '',
           'error_log' => '',
           'html' => ''
@@ -3167,21 +3339,31 @@ try {
           continue;
         }
         if ($isUrl && is_torrent_url($input)) {
-          $parsed = [build_torrent_source_row($input)];
-          $scraped[] = ['label' => $label, 'rows' => $parsed];
+          $torrentParseDebug = '';
+          try {
+            $torrentAllEntries = rgsx_fetch_torrent_entries_php($input);
+            $parsed = rgsx_torrent_entries_to_rows($torrentAllEntries, $input, $torrentValidExtensions);
+            $torrentParseDebug = 'Torrent expanded: ' . count($torrentAllEntries) . ' total entries, ' . count($parsed) . ' after extension filter (' . (empty($torrentValidExtensions) ? 'none' : implode(', ', $torrentValidExtensions)) . ').';
+          } catch (Throwable $torrentExc) {
+            $parsed = [];
+            $torrentParseDebug = 'Torrent fetch/parse failed: ' . $torrentExc->getMessage();
+          }
+          if (!empty($parsed)) {
+            $scraped[] = ['label' => $label, 'rows' => $parsed];
+          }
           $debugHtmls[] = [
             'label' => $label,
-            'status' => 200,
-            'error' => '',
+            'status' => !empty($parsed) ? 200 : 0,
+            'error' => empty($parsed) ? $torrentParseDebug : '',
             'effective_url' => $input,
-            'parsed_count' => 1,
+            'parsed_count' => count($parsed),
             'link_count' => 0,
             'table_count' => 0,
             'password_debug' => '',
             'cookies' => $scrapeCookies !== '' ? 'provided' : '',
-            'valid_extensions_count' => count($validExtensions),
-            'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
-            'parse_debug' => 'Torrent manifest URL detected and stored as a single source row.',
+            'valid_extensions_count' => count($torrentValidExtensions),
+            'extensions_sample' => implode(', ', array_slice($torrentValidExtensions, 0, 20)),
+            'parse_debug' => $torrentParseDebug,
             'raw_sample' => '',
             'error_log' => '',
             'html' => ''
@@ -3271,6 +3453,31 @@ try {
                 $parsed[] = [$fname, $fileUrl, $size];
               }
             }
+          }
+        }
+        // Expand any .torrent links found in the parsed rows (same as direct torrent input)
+        if (!empty($parsed)) {
+          $expandedParsed = [];
+          $torrentLinksExpanded = 0;
+          $torrentLinksTotal = 0;
+          foreach ($parsed as $parsedRow) {
+            if (is_array($parsedRow) && count($parsedRow) >= 2 && is_string($parsedRow[1]) && is_torrent_url($parsedRow[1])) {
+              $torrentLinksTotal++;
+              try {
+                $tEntries = rgsx_fetch_torrent_entries_php($parsedRow[1]);
+                $tRows = rgsx_torrent_entries_to_rows($tEntries, $parsedRow[1], $torrentValidExtensions);
+                foreach ($tRows as $tr) { $expandedParsed[] = $tr; }
+                $torrentLinksExpanded++;
+              } catch (Throwable $tExc) {
+                $expandedParsed[] = $parsedRow; // keep original on error
+              }
+            } else {
+              $expandedParsed[] = $parsedRow;
+            }
+          }
+          if ($torrentLinksTotal > 0) {
+            $parsed = $expandedParsed;
+            $parseDebugInfo .= ' Torrents trouvés sur la page: ' . $torrentLinksExpanded . '/' . $torrentLinksTotal . ' expandés.';
           }
         }
         $scraped[] = ['label' => $label, 'rows' => $parsed];
@@ -3790,6 +3997,7 @@ try {
       $platformGamesData = $_SESSION['platform_games'] ?? [];
       $imagesData = $_SESSION['images'] ?? [];
       $progressKey = trim((string)($_POST['zip_progress_key'] ?? ''));
+      $skipCache = !empty($_POST['skip_cache']);
       if ($progressKey === '') { $progressKey = session_id(); }
       rgsx_debug_log('build_zip.start', [
         'action' => 'build_zip',
@@ -3844,11 +4052,13 @@ try {
         ], $progressKey);
       }
       rgsx_zip_progress_write('cache', t('zip.generate_caches', 'Generating embedded caches...'), 72, [], $progressKey);
-      $cacheBuild = generate_embedded_rgsx_caches($platformGamesData);
+      if ($skipCache) {
+        $cacheBuild = ['ok' => false, 'error' => 'skipped (no-cache mode)'];
+        rgsx_zip_progress_write('cache', t('zip.caches_skipped', 'Cache generation skipped.'), 92, [], $progressKey);
+      } else {
+        $cacheBuild = generate_embedded_rgsx_caches($platformGamesData);
+      }
       if (!empty($cacheBuild['ok'])) {
-        if (!empty($cacheBuild['torrent_cache'])) {
-          $zip->addFile($cacheBuild['torrent_cache'], 'torrent_manifest_cache.json');
-        }
         if (!empty($cacheBuild['platform_cache'])) {
           $zip->addFile($cacheBuild['platform_cache'], 'platform_games_count_cache.json');
         }
@@ -4234,7 +4444,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
         return fallbackName;
       }
     }
-    async function submitBuildZipForm() {
+    async function submitBuildZipForm(skipCache) {
       const buildZipForm = document.getElementById('buildZipForm');
       if (!(buildZipForm instanceof HTMLFormElement) || zipDownloadInFlight) {
         return false;
@@ -4242,9 +4452,11 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
       zipDownloadInFlight = true;
       const tokenInput = buildZipForm.querySelector('input[name="zip_progress_key"]');
       const activeTabInput = buildZipForm.querySelector('input[name="active_tab"]');
+      const skipCacheInput = document.getElementById('buildZipSkipCache');
       const progressKey = 'zip_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
       if (tokenInput) tokenInput.value = progressKey;
       if (activeTabInput) activeTabInput.value = 'tab-package';
+      if (skipCacheInput) skipCacheInput.value = skipCache ? '1' : '0';
       showDownloadOverlay('zip');
       startZipProgressPolling(progressKey);
       try {
@@ -4350,6 +4562,11 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
           <label class="form-label"><?php echo t('scrape.urls_file_label', 'Fichier texte de liens'); ?></label>
           <input type="file" class="form-control" name="urls_file" accept=".txt,.csv,.list,text/plain">
           <div class="form-text"><?php echo t('scrape.urls_file_help', 'Importez un fichier texte contenant un lien par ligne, ou des lignes au format name|title_id|url.'); ?></div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label"><?php echo t('scrape.torrent_file_label', 'Fichier torrent (.torrent)'); ?></label>
+          <input type="file" class="form-control" name="torrent_file" accept=".torrent,application/x-bittorrent">
+          <div class="form-text"><?php echo t('scrape.torrent_file_help', 'Importez directement un fichier .torrent. Le contenu sera analysé et les jeux listés comme source torrent.'); ?></div>
         </div>
         <div class="mb-2">
           <label class="form-label"><?php echo t('scrape.password_label'); ?></label>
@@ -4672,6 +4889,25 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
               if (typeof candidate !== 'string') continue;
               let value = candidate.trim();
               if (!value) continue;
+              // Special case: rgsx+torrent:// URLs store the file path in the 'path' query parameter
+              if (/^rgsx\+torrent:\/\//i.test(value)) {
+                try {
+                  const qmark = value.indexOf('?');
+                  if (qmark !== -1) {
+                    const params = new URLSearchParams(value.slice(qmark + 1));
+                    const path = params.get('path') || '';
+                    if (path) {
+                      const basename = path.split('/').pop() || path;
+                      const dot = basename.lastIndexOf('.');
+                      if (dot > 0 && dot < basename.length - 1) {
+                        const ext = basename.slice(dot + 1).toLowerCase();
+                        if (/^[a-z0-9]{1,32}$/.test(ext)) return ext;
+                      }
+                    }
+                  }
+                } catch (_) {}
+                return '';
+              }
               try {
                 if (/^https?:\/\//i.test(value)) {
                   const parsed = new URL(value);
@@ -5032,7 +5268,11 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
               <input type="hidden" name="action" value="build_zip">
               <input type="hidden" name="active_tab" value="tab-package">
               <input type="hidden" name="zip_progress_key" value="">
-              <button class="btn btn-success" id="buildZipButton" type="button" onclick="submitBuildZipForm()" <?php echo empty($systems)?'disabled':''; ?>><?php echo t('btn.build_zip'); ?></button>
+              <input type="hidden" name="skip_cache" value="0" id="buildZipSkipCache">
+              <div class="d-flex gap-2 flex-wrap">
+              <button class="btn btn-success" id="buildZipButton" type="button" onclick="submitBuildZipForm(false)" <?php echo empty($systems)?'disabled':''; ?>><?php echo t('btn.build_zip'); ?></button>
+              <button class="btn btn-outline-secondary" id="buildZipNoCacheButton" type="button" onclick="submitBuildZipForm(true)" <?php echo empty($systems)?'disabled':''; ?> title="<?php echo t('btn.build_zip_no_cache_title','Génère le ZIP sans reconstruire les caches (plus rapide)'); ?>"><?php echo t('btn.build_zip_no_cache','Générer sans cache'); ?></button>
+              </div>
             </form>
             <form method="post" target="downloadFrame" id="downloadSystemsForm" onsubmit="showDownloadOverlay('systems')">
               <input type="hidden" name="action" value="systems_download">
