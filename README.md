@@ -60,13 +60,19 @@ L’application se présente en 4 onglets
   - Bouton "Charger" pour envoyer un fichier ZIP contenant `systems_list.json`, `games/*.json`, `images/*`.
   - Bouton "Utiliser base RGSX officielle" remplit l’URL avec la source RGSX officielle pour avoir une base complète à modifier.
 - Zone "URLs ou HTML":
-  - Collez une ou plusieurs URLs à scrapper (archive.org, 1fichier, myrient).
+  - Collez une ou plusieurs URLs à scrapper (archive.org, 1fichier, myrient, pages HTML quelconques).
+  - Collez directement l'URL d'un fichier `.torrent` : le contenu est analysé immédiatement et les jeux listés avec leurs liens téléchargeables.
+  - Si l'URL pointe vers un **feed JSON** (tableau `[[nom, url, taille], …]`), les entrées sont importées directement sans parseur HTML (ex: `rgsx_feed.php` déployé sur un serveur).
+  - Les liens `.torrent` trouvés sur une page HTML sont également expandés automatiquement à la volée.
   - Indiquez le mot de passe si un dossier 1fichier est protégé.
   - Cliquez sur "Scraper".
+- Fichier torrent (upload direct):
+  - Importez un fichier `.torrent` local via le champ dédié ; le contenu est analysé et les jeux listés comme source torrent.
 - Résultats:
-  - Chaque source détectée affiche son nombre de fichiers.
-  - Pour attacher le resultat à une plateforme: choisissez une plateforme (liste) et cliquez "Attacher à la plateforme".
-  - Vous pouvez aussi "Ajouter tous" (tous les resultats) sur une plateforme choisie.
+  - Chaque source détectée affiche son nombre de fichiers et la taille totale.
+  - **Filtre d'extensions** : les extensions détectées (ex: `wsquashfs`, `zip`) s'affichent sous forme de cases à cocher. Décochez les extensions à exclure avant d'attacher.
+  - Pour attacher le résultat à une plateforme: choisissez une plateforme (liste) et cliquez "Attacher à la plateforme".
+  - Vous pouvez aussi "Ajouter tous" (tous les résultats) sur une plateforme choisie.
 
 ### 2) Plateformes (systems_list.json)
 - Ajouter une plateforme:

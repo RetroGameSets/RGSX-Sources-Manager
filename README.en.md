@@ -60,11 +60,17 @@ The application has 4 tabs.
   - "Load" uploads a ZIP that contains `systems_list.json`, `games/*.json`, `images/*`.
   - "Use official RGSX base" fills the URL with the official RGSX source to get a complete base you can edit.
 - "URLs or HTML" area:
-  - Paste one or more URLs to scrape (archive.org, 1fichier, myrient).
+  - Paste one or more URLs to scrape (archive.org, 1fichier, myrient, any HTML page).
+  - Paste a direct `.torrent` file URL: its content is parsed immediately and games are listed with ready-to-use download links.
+  - If the URL returns a **JSON feed** (array of `[[name, url, size], …]`), entries are imported directly without an HTML parser (e.g. `rgsx_feed.php` deployed on a server).
+  - `.torrent` links found while scraping an HTML page are also expanded automatically on the fly.
   - Provide a password if a 1fichier folder is protected.
   - Click "Scrape".
+- Torrent file (direct upload):
+  - Import a local `.torrent` file via the dedicated field; its content is parsed and games listed as a torrent source.
 - Results:
-  - Each detected source shows its file count.
+  - Each detected source shows its file count and total size.
+  - **Extension filter**: detected extensions (e.g. `wsquashfs`, `zip`) appear as checkboxes. Uncheck any extensions you want to exclude before attaching.
   - To attach the result to a platform: choose a platform (list) and click "Attach to platform".
   - You can also "Add all" (all results) to a chosen platform.
 
