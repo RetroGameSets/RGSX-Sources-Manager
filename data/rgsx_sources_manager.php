@@ -2373,11 +2373,20 @@ function parse_lolroms($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensi
 }
 function parse_vimm_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
   $result = [];
-  
+
+  // IDs vimm.net à ignorer systématiquement (liens parasites/placeholders qui
+  // apparaissent sur plusieurs pages lettre, causant des doublons lors du scrape).
+  $ignoredVimmIds = ['999999'];
+
   // Check if this is an individual game page (URL ends with a number)
   if (preg_match('#^https?://vimm\.net/vault/(\d+)$#i', $urlOrFragment, $matches)) {
     // Individual game page - extract title and download URL
     $gameId = $matches[1];
+
+    if (in_array($gameId, $ignoredVimmIds, true)) {
+      rgsx_debug_log('vimm_ignored_id', ['gameId' => $gameId, 'url' => $urlOrFragment]);
+      return $result;
+    }
     
     // Try to find the title in the page
     $title = '';
@@ -2411,6 +2420,9 @@ function parse_vimm_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtens
     $href = $a->getAttribute('href');
     if (preg_match('#^/vault/(\d+)$#', $href, $matches)) {
       $gameId = $matches[1];
+      if (in_array($gameId, $ignoredVimmIds, true)) {
+        continue;
+      }
       $gameTitle = trim($a->textContent);
       if ($gameTitle === '') continue;
       
