@@ -6,11 +6,10 @@ Téléchargements rapides:
 - Windows (portable): https://github.com/RetroGameSets/rgsx-sources-manager/releases/latest/download/RGSX_Sources_Manager_Windows.zip
 - PHP (hébergé, minimal): https://github.com/RetroGameSets/rgsx-sources-manager/releases/latest/download/RGSX_Sources_Manager_PHP.zip
 
-RGSX Sources Manager est un outil tout-en-un pour:
-- Scraper des listes de jeux depuis des pages/URLs (archive.org, 1fichier, myrient, edgeemu.net…)
-- Éditer le fichier `systems_list.json` et gérer vos plateformes
-- Éditer les listes de jeux par plateforme (`games/*.json`)
-- Générer un package ZIP prêt à l’emploi (systems_list.json, images/, games/)
+RGSX Sources Manager est l’interface d’administration du catalogue MariaDB central pour:
+- Modifier directement les plateformes, images et jeux du catalogue partagé
+- Scraper des sources (archive.org, 1fichier, myrient, edgeemu.net, Vimm…) puis ajouter ou mettre à jour les résultats
+- Conserver les données existantes pendant les fusions, avec déduplication par nom
 
 Ce dépôt contient une version fonctionnelle qui peut s’utiliser:
 - En local sous Windows (avec PHP portable inclus)
@@ -18,16 +17,17 @@ Ce dépôt contient une version fonctionnelle qui peut s’utiliser:
 
 ---
 
-## 1) Utilisation locale Windows (recommandée)
+## 1) Utilisation locale Windows
 
 Prérequis: Windows 10/11. Aucun PHP à installer (inclus dans `data/php_local_server`).
+Le poste doit pouvoir joindre MariaDB; pour un accès distant, l’hébergeur doit autoriser l’adresse IP du poste.
 
 Étapes:
 1. Télécharger et extraire l’archive du projet dans un dossier (sans espace si possible).
 2. Ouvrir le dossier et exécuter `RGSX_Manager.bat`.
 3. Le script démarre un petit serveur PHP intégré sur `127.0.0.1:8088` et ouvre votre navigateur à l’URL:
-   - `http://127.0.0.1:8088/data/rgsx_sources_manager.php`
-4. L’interface web s’affiche. Vous pouvez alors utiliser les 4 onglets: Scraper, Plateformes, Jeux, Package ZIP.
+  - `http://127.0.0.1:8088/data/rgsx_database_manager.php`
+4. Connectez-vous avec le mot de passe du compte administrateur MariaDB du Manager, puis utilisez **Plateformes**, **Jeux** et **Scraper**. Le Manager modifie directement le catalogue central.
 
 Notes:
 - Si un pare-feu demande une autorisation pour PHP, acceptez l’accès local.
@@ -37,21 +37,57 @@ Notes:
 
 ## 2) Utilisation sur un serveur hébergé avec PHP pour un accès depuis n'importe quel système pc ou mobile.
 
-Prérequis: Serveur Web (Apache/Nginx) + PHP 8.x (ou 7.4+).
+Prérequis: Serveur Web (Apache/Nginx) + PHP 8.1 ou plus récent.
 
 Déploiement minimal:
-1. Copier sur le serveur le fichier `data/rgsx_sources_manager.php` et le dossier `data/assets` (contenant `lang/`, `batocera_systems.json`, etc.).
-2. Définir le DocumentRoot pour qu’il serve ces fichiers, ou placer-les sous un chemin accessible publiquement.
+1. Copier sur le serveur `data/rgsx_database_manager.php`, `data/rgsx_catalog_db.php`, `data/rgsx_sources_manager.php`, `data/rgsx_catalog_api.php` et `data/assets`.
+2. Déployer les fichiers côte à côte dans un répertoire `/rgsx/` servi en HTTPS.
 3. Accéder dans un navigateur à l’URL (exemple):
-   - `https://votre-domaine.tld/data/rgsx_sources_manager.php`
+  - `https://votre-domaine.tld/rgsx/rgsx_database_manager.php`
 
 Remarques:
-- Le chemin exact dépend de la structure de vos hôtes virtuels. Le fichier doit être accessible via HTTP.
+- Le chemin exact dépend de la structure de vos hôtes virtuels. Le fichier doit être accessible via HTTPS.
 - Pour un déploiement complet (avec portable PHP côté serveur), préférez une installation classique PHP/Apache.
 
 ---
 
-## Découverte de l’interface et flux d’utilisation
+## Synchronisation du catalogue RGSX
+
+### Manager Windows local connecté à MariaDB
+
+Lancez `RGSX_Manager.bat`, puis saisissez le mot de passe du compte administrateur dans la page de connexion. Le mot de passe n’est pas écrit dans un fichier ni dans le cookie : il reste dans la session PHP locale. La session est mémorisée pendant 30 jours sur ce navigateur ; utilisez **Se déconnecter** pour l’effacer.
+
+Par défaut, le Manager utilise `retrogamesets.fr:3306`, la base `mbco1317_rgsx` et l’utilisateur `mbco1317_rgsx_admin`. L’écran doit afficher `MariaDB Sources Manager`, `mysql://...` et les compteurs de la base centrale. Le compte doit disposer des droits d’écriture et de création des triggers ; le compte de lecture seule de l’API ne convient pas au Manager.
+
+En production, le Manager utilise la base MySQL centrale avec le compte administrateur. Configurez le processus PHP avec:
+
+```sh
+export RGSX_MYSQL_HOST=retrogamesets.fr
+export RGSX_MYSQL_PORT=3306
+export RGSX_MYSQL_DATABASE=mbco1317_rgsx
+export RGSX_MYSQL_USER=mbco1317_admrgs
+export RGSX_MYSQL_SSL_CA=/etc/ssl/certs/mysql-ca.pem
+```
+
+Le mot de passe administrateur du Manager est saisi dans sa page de connexion et conservé uniquement dans la session PHP. Le serveur PHP doit avoir `pdo_mysql` activé. Les formulaires POST du Manager sont protégés par un jeton CSRF de session.
+
+### API de catalogue pour RGSX
+
+Les clients RGSX ne se connectent jamais à MariaDB et ne reçoivent aucun identifiant SQL. Ils appellent `https://votre-domaine.tld/rgsx/rgsx_catalog_api.php` en HTTPS. L’API n’accepte que `GET` et trois actions autorisées (`manifest`, `snapshot`, `changes`); les requêtes utilisent des paramètres préparés. Le catalogue est public en lecture seule et paginé, avec une limitation de débit; aucun jeton embarqué dans l’application n’est considéré comme un secret.
+
+Créez un compte dédié sur le serveur, avec `SELECT` uniquement sur les tables nécessaires (`platforms`, `games`, `platform_assets`, `catalog_changes`). Configurez ses identifiants dans l’environnement PHP ou un fichier secret hors racine web :
+
+```sh
+export RGSX_CATALOG_API_ENV_FILE=/srv/rgsx/secrets/catalog-api.env
+```
+
+Le fichier `/srv/rgsx/secrets/catalog-api.env` doit être hors de la racine web, lisible uniquement par PHP-FPM, et contenir `RGSX_CATALOG_DB_HOST`, `RGSX_CATALOG_DB_PORT`, `RGSX_CATALOG_DB_NAME`, `RGSX_CATALOG_DB_USER`, `RGSX_CATALOG_DB_PASSWORD` et éventuellement `RGSX_CATALOG_DB_SSL_CA`. Le compte SQL doit être dédié et avoir `SELECT` uniquement sur les tables catalogue; limite son hôte à `localhost` si possible. Retire toutes les IP des clients RGSX de la liste Remote MySQL cPanel. Si le Manager Windows se connecte directement à MariaDB, autorise uniquement l’IP fixe de ce poste de confiance; si le Manager est hébergé sur le serveur de base, utilise `localhost` et désactive l’accès distant. Le compte administrateur du Manager est séparé.
+
+Le Manager est le seul composant qui écrit le catalogue central. RGSX synchronise un snapshot paginé au premier lancement, puis uniquement les changements; il conserve une copie SQLite locale pour accélérer la navigation. La synchronisation ne remplace jamais l’historique, les jeux téléchargés ni les caches utilisateur.
+
+<!-- Documentation historique conservée ci-dessous pour référence des anciens flux. -->
+
+## Ancienne interface et flux historiques
 
 L’application se présente en 4 onglets
 

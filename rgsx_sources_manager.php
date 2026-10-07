@@ -1,5 +1,23 @@
 <?php
-session_start();
+if (session_status() !== PHP_SESSION_ACTIVE) {
+  $https = !empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off';
+  session_set_cookie_params([
+    'lifetime' => 60 * 60 * 24 * 30,
+    'path' => '/',
+    'secure' => $https,
+    'httponly' => true,
+    'samesite' => 'Lax',
+  ]);
+  session_start();
+}
+require_once __DIR__ . '/rgsx_catalog_db.php';
+
+if (!defined('RGSX_SOURCES_MANAGER_LIBRARY')) {
+  http_response_code(404);
+  header('Content-Type: text/plain; charset=utf-8');
+  echo 'Not found.';
+  exit;
+}
 
 function rgsx_debug_log(string $event, array $context = []): void {
   $payload = '[' . date('Y-m-d H:i:s') . '] ' . $event;
@@ -405,7 +423,7 @@ function normalize_archiveorg_scrape_url(string $url): string {
   }
 
   $path = (string)($parts['path'] ?? '');
-  if (preg_match('#^/details/([^/?#]+)#i', $path, $m)) {
+  if (preg_match('~^/details/([^/?#]+)~i', $path, $m)) {
     $identifier = trim((string)$m[1]);
     if ($identifier !== '') {
       return 'https://archive.org/download/' . rawurlencode(rawurldecode($identifier));
@@ -586,50 +604,6 @@ function rgsx_zip_progress_read(?string $progressKey = null): array {
 function rgsx_zip_progress_clear(?string $progressKey = null): void {
   $path = rgsx_zip_progress_path($progressKey);
   if (is_file($path)) { @unlink($path); }
-}
-
-function rgsx_cache_helper_candidates(): array {
-  $candidates = [];
-  $env = trim((string)getenv('RGSX_CACHE_HELPER'));
-  if ($env !== '') { $candidates[] = $env; }
-
-  $workspaceRoot = dirname(__DIR__, 2);
-  $siblingRgsx = $workspaceRoot . DIRECTORY_SEPARATOR . 'RGSX';
-  $candidates[] = $siblingRgsx . DIRECTORY_SEPARATOR . 'roms' . DIRECTORY_SEPARATOR . 'ports' . DIRECTORY_SEPARATOR . 'RGSX' . DIRECTORY_SEPARATOR . 'build_embedded_caches.py';
-  $candidates[] = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'build_embedded_caches.py';
-
-  $seen = [];
-  $resolved = [];
-  foreach ($candidates as $candidate) {
-    $candidate = trim((string)$candidate);
-    if ($candidate === '' || isset($seen[$candidate])) { continue; }
-    $seen[$candidate] = true;
-    if (is_file($candidate)) { $resolved[] = $candidate; }
-  }
-  return $resolved;
-}
-
-function rgsx_python_command_candidates(): array {
-  $workspaceRoot = dirname(__DIR__, 2);
-  $siblingRgsx = $workspaceRoot . DIRECTORY_SEPARATOR . 'RGSX';
-  $candidates = [];
-
-  $env = trim((string)getenv('RGSX_CACHE_BUILDER_PYTHON'));
-  if ($env !== '') { $candidates[] = escapeshellarg($env); }
-
-  $pathCandidates = [
-    $siblingRgsx . DIRECTORY_SEPARATOR . 'system' . DIRECTORY_SEPARATOR . 'tools' . DIRECTORY_SEPARATOR . 'Python' . DIRECTORY_SEPARATOR . 'python.exe',
-    $siblingRgsx . DIRECTORY_SEPARATOR . '.venv' . DIRECTORY_SEPARATOR . 'Scripts' . DIRECTORY_SEPARATOR . 'python.exe',
-  ];
-  foreach ($pathCandidates as $pathCandidate) {
-    if (is_file($pathCandidate)) {
-      $candidates[] = escapeshellarg($pathCandidate);
-    }
-  }
-
-  $candidates[] = 'python';
-  $candidates[] = 'py -3';
-  return array_values(array_unique($candidates));
 }
 
 function rgsx_cache_decode_text($value): string {
@@ -932,110 +906,6 @@ function rgsx_build_platform_search_entries_php(array $rows, array &$torrentMani
     }
   }
   return $entries;
-}
-
-function generate_embedded_rgsx_caches_php(array $platformGames, string $outputDir, string $tempRoot): array {
-  $torrentManifestCache = [];  // kept for TORRENT-row backward compat only, no longer written
-  $platformCountCache = [];
-  $globalSearchIndex = [];
-  $warnings = [];
-
-  foreach ($platformGames as $fname => $rows) {
-    $filename = basename((string)$fname);
-    if (substr($filename, -5) !== '.json') {
-      $filename .= '.json';
-    }
-    $platformId = pathinfo($filename, PATHINFO_FILENAME);
-    $platformEntries = rgsx_build_platform_search_entries_php(is_array($rows) ? $rows : [], $torrentManifestCache, $warnings, $platformId);
-    $platformCountCache[$platformId] = [
-      'path' => '',
-      'mtime_ns' => 0,
-      'file_name' => $filename,
-      'size_bytes' => strlen((string)json_encode($rows, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)),
-      'count' => count($platformEntries),
-    ];
-    $globalSearchIndex = array_merge($globalSearchIndex, $platformEntries);
-  }
-
-  $platformCachePath = $outputDir . DIRECTORY_SEPARATOR . 'platform_games_count_cache.json';
-  $globalSearchIndexPath = $outputDir . DIRECTORY_SEPARATOR . 'global_search_index.json';
-  @file_put_contents($platformCachePath, json_encode(['version' => 2, 'entries' => $platformCountCache], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-  @file_put_contents($globalSearchIndexPath, json_encode(['version' => 1, 'entries' => $globalSearchIndex], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-
-  return [
-    'ok' => is_file($platformCachePath) || is_file($globalSearchIndexPath),
-    'temp_root' => $tempRoot,
-    'torrent_cache' => '',
-    'platform_cache' => is_file($platformCachePath) ? $platformCachePath : '',
-    'global_search_index' => is_file($globalSearchIndexPath) ? $globalSearchIndexPath : '',
-    'stdout' => '',
-    'command' => 'php-fallback',
-    'warnings' => $warnings,
-  ];
-}
-
-function generate_embedded_rgsx_caches(array $platformGames): array {
-  $tempRoot = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'rgsx_cache_' . bin2hex(random_bytes(6));
-  $gamesDir = $tempRoot . DIRECTORY_SEPARATOR . 'games';
-  $outputDir = $tempRoot . DIRECTORY_SEPARATOR . 'out';
-  @mkdir($gamesDir, 0777, true);
-  @mkdir($outputDir, 0777, true);
-
-  foreach ($platformGames as $fname => $rows) {
-    $filename = basename((string)$fname);
-    if (substr($filename, -5) !== '.json') {
-      $filename .= '.json';
-    }
-    $targetPath = $gamesDir . DIRECTORY_SEPARATOR . $filename;
-    @file_put_contents($targetPath, json_encode($rows, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE));
-  }
-
-  $helperCandidates = rgsx_cache_helper_candidates();
-  $pythonCandidates = rgsx_python_command_candidates();
-  if (empty($helperCandidates) || empty($pythonCandidates)) {
-    return generate_embedded_rgsx_caches_php($platformGames, $outputDir, $tempRoot);
-  }
-
-  $lastOutput = '';
-  $lastExitCode = 1;
-  $helperPath = $helperCandidates[0];
-  foreach ($pythonCandidates as $pythonCmd) {
-    $cmd = $pythonCmd . ' ' . escapeshellarg($helperPath) . ' --games-dir ' . escapeshellarg($gamesDir) . ' --output-dir ' . escapeshellarg($outputDir) . ' 2>&1';
-    $output = [];
-    $exitCode = 1;
-    @exec($cmd, $output, $exitCode);
-    $joinedOutput = trim(implode("\n", $output));
-    $lastOutput = $joinedOutput;
-    $lastExitCode = $exitCode;
-    if ($exitCode === 0) {
-      $platformCache = $outputDir . DIRECTORY_SEPARATOR . 'platform_games_count_cache.json';
-      $globalSearchIndex = $outputDir . DIRECTORY_SEPARATOR . 'global_search_index.json';
-      return [
-        'ok' => is_file($platformCache) || is_file($globalSearchIndex),
-        'temp_root' => $tempRoot,
-        'torrent_cache' => '',
-        'platform_cache' => is_file($platformCache) ? $platformCache : '',
-        'global_search_index' => is_file($globalSearchIndex) ? $globalSearchIndex : '',
-        'stdout' => $joinedOutput,
-        'command' => $cmd,
-      ];
-    }
-  }
-
-  $fallbackResult = generate_embedded_rgsx_caches_php($platformGames, $outputDir, $tempRoot);
-  if (!empty($fallbackResult['ok'])) {
-    $fallbackResult['stdout'] = trim(($lastOutput !== '' ? ($lastOutput . "\n") : '') . 'python helper unavailable, php fallback used');
-    $fallbackResult['exit_code'] = $lastExitCode;
-    return $fallbackResult;
-  }
-
-  return [
-    'ok' => false,
-    'error' => 'cache helper execution failed',
-    'temp_root' => $tempRoot,
-    'stdout' => $lastOutput,
-    'exit_code' => $lastExitCode,
-  ];
 }
 
 function remove_tree(string $path): void {
@@ -2988,11 +2858,41 @@ function parse_auto($html, $sourceLabel, $isUrl, $urlOrFragment, $validExtension
   return $g;
 }
 
+return;
+
 // -------------- State (Session) --------------------
 $_SESSION['systems_list'] = $_SESSION['systems_list'] ?? [];
 $_SESSION['platform_games'] = $_SESSION['platform_games'] ?? []; // map: filename => array rows
 $_SESSION['images'] = $_SESSION['images'] ?? []; // array of [name, tmp_path, type]
 $_SESSION['active_tab'] = $_SESSION['active_tab'] ?? 'tab-scrape';
+
+// The central MariaDB catalog is authoritative; scrape results remain session-scoped.
+if (rgsx_catalog_db_available()) {
+  try {
+    $_SESSION['systems_list'] = array_map(static function($row) {
+      return [
+        'platform_name' => (string)($row['platform_name'] ?? ''),
+        'folder' => (string)($row['folder'] ?? ''),
+        'platform_image' => (string)($row['platform_image'] ?? ''),
+      ];
+    }, rgsx_catalog_db_platforms());
+    $_SESSION['platform_games'] = rgsx_catalog_db_games_map();
+    $catalogImages = rgsx_catalog_db_load_session_images();
+    $knownImageNames = [];
+    foreach ($_SESSION['images'] as $existingImage) {
+      $knownImageNames[basename((string)($existingImage['name'] ?? ''))] = true;
+    }
+    foreach ($catalogImages as $catalogImage) {
+      $imageName = basename((string)($catalogImage['name'] ?? ''));
+      if ($imageName !== '' && !isset($knownImageNames[$imageName])) {
+        $_SESSION['images'][] = $catalogImage;
+        $knownImageNames[$imageName] = true;
+      }
+    }
+  } catch (Throwable $databaseException) {
+    rgsx_debug_log('catalog.load_failed', ['error' => $databaseException->getMessage()]);
+  }
+}
 
 // -------------- Actions routing --------------------
 $action = $_POST['action'] ?? '';
@@ -3468,6 +3368,8 @@ try {
           }
         }
         // Expand any .torrent links found in the parsed rows (same as direct torrent input)
+        $torrentRows = [];
+        $regularRows = [];
         if (!empty($parsed)) {
           $expandedParsed = [];
           $torrentLinksExpanded = 0;
@@ -3492,7 +3394,23 @@ try {
             $parseDebugInfo .= ' Torrents trouvés sur la page: ' . $torrentLinksExpanded . '/' . $torrentLinksTotal . ' expandés.';
           }
         }
-        $scraped[] = ['label' => $label, 'rows' => $parsed];
+        // Keep Archive.org direct downloads and torrent-expanded downloads as separate choices.
+        if ($isUrl && stripos((string)(parse_url($input, PHP_URL_HOST) ?: ''), 'archive.org') !== false) {
+          foreach ($parsed as $parsedRow) {
+            $rowUrl = is_array($parsedRow) ? trim((string)($parsedRow[1] ?? '')) : '';
+            if (stripos($rowUrl, 'rgsx+torrent://') === 0 || is_torrent_url($rowUrl)) {
+              $torrentRows[] = $parsedRow;
+            } else {
+              $regularRows[] = $parsedRow;
+            }
+          }
+        }
+        if (!empty($regularRows) && !empty($torrentRows)) {
+          $scraped[] = ['label' => $label . ' (archive)', 'rows' => $regularRows];
+          $scraped[] = ['label' => $label . ' (torrent)', 'rows' => $torrentRows];
+        } else {
+          $scraped[] = ['label' => $label, 'rows' => $parsed];
+        }
         $dbgLabel = $label . ($usedPassword ? ' [PW]' : '');
         
         // Compter les liens dans le HTML pour debug
@@ -4063,40 +3981,6 @@ try {
           'detail' => basename((string)($img['name'] ?? '')) . ' (' . $imagesIndex . '/' . $imagesTotal . ')',
         ], $progressKey);
       }
-      rgsx_zip_progress_write('cache', t('zip.generate_caches', 'Generating embedded caches...'), 72, [], $progressKey);
-      if ($skipCache) {
-        $cacheBuild = ['ok' => false, 'error' => 'skipped (no-cache mode)'];
-        rgsx_zip_progress_write('cache', t('zip.caches_skipped', 'Cache generation skipped.'), 92, [], $progressKey);
-      } else {
-        $cacheBuild = generate_embedded_rgsx_caches($platformGamesData);
-      }
-      if (!empty($cacheBuild['ok'])) {
-        if (!empty($cacheBuild['platform_cache'])) {
-          $zip->addFile($cacheBuild['platform_cache'], 'platform_games_count_cache.json');
-        }
-        if (!empty($cacheBuild['global_search_index'])) {
-          $zip->addFile($cacheBuild['global_search_index'], 'global_search_index.json');
-        }
-        file_put_contents(__DIR__ . '/assets/debug.log', '[' . date('Y-m-d H:i:s') . "] Cache files added to games.zip\n", FILE_APPEND);
-        rgsx_debug_log('build_zip.cache', [
-          'progress_key' => $progressKey,
-          'torrent_cache' => !empty($cacheBuild['torrent_cache']),
-          'platform_cache' => !empty($cacheBuild['platform_cache']),
-            'global_search_index' => !empty($cacheBuild['global_search_index']),
-          'command' => $cacheBuild['command'] ?? '',
-        ]);
-      } else {
-        $debug = '[' . date('Y-m-d H:i:s') . '] Embedded cache build skipped: ' . ($cacheBuild['error'] ?? 'unknown error');
-        if (!empty($cacheBuild['stdout'])) { $debug .= "\n" . $cacheBuild['stdout']; }
-        $debug .= "\n";
-        file_put_contents(__DIR__ . '/assets/debug.log', $debug, FILE_APPEND);
-        rgsx_debug_log('build_zip.cache', [
-          'progress_key' => $progressKey,
-          'status' => 'skipped',
-          'error' => $cacheBuild['error'] ?? 'unknown error',
-          'command' => $cacheBuild['command'] ?? '',
-        ]);
-      }
       rgsx_zip_progress_write('finalizing', t('zip.finalizing', 'Finalizing ZIP archive...'), 92, [], $progressKey);
       $zip->close();
       rgsx_zip_progress_write('downloading', t('zip.ready_transfer', 'ZIP ready, sending to browser...'), 100, [], $progressKey);
@@ -4130,6 +4014,18 @@ try {
 }
 
 if ($action !== '') {
+  try {
+    rgsx_catalog_db_sync_after_action(
+      (string)$action,
+      is_array($_POST) ? $_POST : [],
+      is_array($_SESSION['systems_list'] ?? null) ? $_SESSION['systems_list'] : [],
+      is_array($_SESSION['platform_games'] ?? null) ? $_SESSION['platform_games'] : []
+    );
+  } catch (Throwable $databaseException) {
+    $error = $error !== '' ? $error . ' ' : '';
+    $error .= 'MariaDB: ' . $databaseException->getMessage();
+    rgsx_debug_log('catalog.sync_failed', ['action' => $action, 'error' => $databaseException->getMessage()]);
+  }
   rgsx_debug_log('action.finish', [
     'action' => $action,
     'status' => $error !== '' ? 'error' : 'ok',

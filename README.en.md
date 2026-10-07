@@ -21,13 +21,14 @@ This repository contains a working version that can be used:
 ## 1) Local usage on Windows (recommended)
 
 Requirements: Windows 10/11. No PHP installation needed (included in `data/php_local_server`).
+The PC must be able to reach MariaDB; remote access must be restricted by the host to the Manager/server IPs.
 
 Steps:
 1. Download and extract the project archive into a folder (avoid spaces if possible).
 2. Open the folder and run `RGSX_Manager.bat`.
 3. The script starts a small built‑in PHP server on `127.0.0.1:8088` and opens your browser at:
-   - `http://127.0.0.1:8088/data/rgsx_sources_manager.php`
-4. The web UI appears. You can then use the 4 tabs: Scrape, Platforms, Games, ZIP Package.
+  - `http://127.0.0.1:8088/data/rgsx_database_manager.php`
+4. Sign in with the Manager's MariaDB administrator password, then use Platforms, Games and Scrape.
 
 Notes:
 - If your firewall prompts for PHP access, allow local access.
@@ -37,17 +38,29 @@ Notes:
 
 ## 2) Usage on a hosted server with PHP (accessible from any PC or mobile)
 
-Requirements: Web Server (Apache/Nginx) + PHP 8.x (or 7.4+).
+Requirements: Web Server (Apache/Nginx) + PHP 8.1 or newer.
 
 Minimal deployment:
-1. Copy `data/rgsx_sources_manager.php` and the `data/assets` folder (containing `lang/`, `batocera_systems.json`, etc.) to the server.
+1. Copy `data/rgsx_database_manager.php`, `data/rgsx_catalog_db.php`, `data/rgsx_sources_manager.php`, `data/rgsx_catalog_api.php`, and `data/assets` to the server.
 2. Configure your DocumentRoot (or place the files under a publicly accessible path).
-3. Open in a browser, for example:
-   - `https://your-domain.tld/data/rgsx_sources_manager.php`
+3. Deploy the files together under `/rgsx/`, then open:
+  - `https://your-domain.tld/rgsx/rgsx_database_manager.php`
 
 Remarks:
-- The exact path depends on your virtual host structure. The file must be reachable via HTTP.
+- The exact path depends on your virtual host structure. The file must be reachable via HTTPS.
 - For server‑side deployments, use a standard PHP/Apache setup rather than portable PHP.
+
+### RGSX catalog API
+
+RGSX clients must not receive MySQL credentials or connect to MariaDB directly. Deploy `rgsx_catalog_api.php` at `https://your-domain.tld/rgsx/rgsx_catalog_api.php`. The API only accepts `GET` requests for the allowlisted `manifest`, `snapshot`, and `changes` actions; it uses prepared SQL, paginates snapshots/deltas, returns no write operation, and applies a per-IP rate limit. Catalog data is intentionally public and read-only, so no hard-coded client token is treated as a secret.
+
+Configure a separate, server-only database user with `SELECT` privileges only on `platforms`, `games`, `platform_assets`, and `catalog_changes`:
+
+```sh
+export RGSX_CATALOG_API_ENV_FILE=/srv/rgsx/secrets/catalog-api.env
+```
+
+The environment file must be outside the web root and readable only by PHP-FPM. It contains `RGSX_CATALOG_DB_HOST`, `RGSX_CATALOG_DB_PORT`, `RGSX_CATALOG_DB_NAME`, `RGSX_CATALOG_DB_USER`, `RGSX_CATALOG_DB_PASSWORD`, and optionally `RGSX_CATALOG_DB_SSL_CA`. Grant that dedicated database account `SELECT` only on the catalog tables and restrict its host to localhost when possible. Remove all RGSX client IPs from cPanel Remote MySQL. If the Windows Manager connects directly to MariaDB, allow only that trusted machine's fixed IP; if the Manager runs on the database host, use localhost and disable remote access. RGSX clients keep a local SQLite catalog cache and user state; synchronization changes catalog tables only, preserving history, downloaded games, and torrent-manifest cache.
 
 ---
 
