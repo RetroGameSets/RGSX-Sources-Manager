@@ -25,11 +25,11 @@ jobs:
           mkdir -p dist
           echo "Building full Windows package ZIP…"
           zip -r "dist/RGSX_Sources_Manager_Windows_${VERSION}.zip" . \
-            -x ".git/*" ".git/**" ".github/*" ".github/**" ".gitignore" "data/assets/pwd.json" "data/assets/debug.log"
+            -x ".git/*" ".git/**" ".github/*" ".github/**" ".gitignore" "assets/debug.log"
 
           echo "Building hosted PHP minimal ZIP…"
           mkdir -p dist/min/assets
-          cp -f data/rgsx_database_manager.php data/rgsx_catalog_db.php data/rgsx_sources_manager.php data/rgsx_catalog_api.php dist/min/
+          cp -f rgsx_database_manager.php rgsx_catalog_db.php rgsx_sources_manager.php rgsx_catalog_api.php dist/min/
           cp -rf data/assets/. dist/min/assets/
           rm -f dist/min/assets/pwd.json dist/min/assets/debug.log
           (cd dist/min && zip -r "../RGSX_Sources_Manager_PHP_${VERSION}.zip" .)
