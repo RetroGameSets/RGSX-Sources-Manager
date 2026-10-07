@@ -1,0 +1,5696 @@
+<?php
+if (session_status() !== PHP_SESSION_ACTIVE) {
+  $https = !empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off';
+  session_set_cookie_params([
+    'lifetime' => 60 * 60 * 24 * 30,
+    'path' => '/',
+    'secure' => $https,
+    'httponly' => true,
+    'samesite' => 'Lax',
+  ]);
+  session_start();
+}
+require_once __DIR__ . '/rgsx_catalog_db.php';
+
+if (!defined('RGSX_SOURCES_MANAGER_LIBRARY')) {
+  http_response_code(404);
+  header('Content-Type: text/plain; charset=utf-8');
+  echo 'Not found.';
+  exit;
+}
+
+function rgsx_debug_log(string $event, array $context = []): void {
+  $payload = '[' . date('Y-m-d H:i:s') . '] ' . $event;
+  if (!empty($context)) {
+    $json = json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json !== false) {
+      $payload .= ' ' . $json;
+    }
+  }
+  $payload .= "\n";
+  @file_put_contents(__DIR__ . '/assets/debug.log', $payload, FILE_APPEND);
+}
+
+
+
+
+
+function rgsx_debug_summarize_value($value, int $depth = 0) {
+  if ($depth >= 2) {
+    if (is_array($value)) {
+      return ['type' => 'array', 'count' => count($value)];
+    }
+    if (is_string($value)) {
+      $value = preg_replace('/\s+/', ' ', trim($value));
+      return strlen($value) > 120 ? (substr($value, 0, 117) . '...') : $value;
+    }
+    return $value;
+  }
+  if (is_array($value)) {
+    $isList = array_keys($value) === range(0, count($value) - 1);
+    if ($isList) {
+      $sample = [];
+      foreach (array_slice($value, 0, 3) as $item) {
+        $sample[] = rgsx_debug_summarize_value($item, $depth + 1);
+      }
+      return ['type' => 'list', 'count' => count($value), 'sample' => $sample];
+    }
+    $summary = [];
+    $index = 0;
+    foreach ($value as $key => $item) {
+      $summary[$key] = rgsx_debug_summarize_value($item, $depth + 1);
+      $index++;
+      if ($index >= 10) {
+        break;
+      }
+    }
+    if (count($value) > 10) {
+      $summary['__truncated__'] = count($value) - 10;
+    }
+    return $summary;
+  }
+  if (is_string($value)) {
+    $value = preg_replace('/\s+/', ' ', trim($value));
+    return strlen($value) > 180 ? (substr($value, 0, 177) . '...') : $value;
+  }
+  if (is_bool($value) || $value === null || is_numeric($value)) {
+    return $value;
+  }
+  return gettype($value);
+}
+
+function rgsx_debug_summarize_map(array $data): array {
+  $summary = [];
+  foreach ($data as $key => $value) {
+    $normalizedKey = strtolower((string)$key);
+    if (strpos($normalizedKey, 'pass') !== false || strpos($normalizedKey, 'token') !== false || strpos($normalizedKey, 'apikey') !== false) {
+      $summary[$key] = '[redacted]';
+      continue;
+    }
+    $summary[$key] = rgsx_debug_summarize_value($value);
+  }
+  return $summary;
+}
+
+function rgsx_debug_summarize_files(array $files): array {
+  $summary = [];
+  foreach ($files as $field => $info) {
+    if (!is_array($info)) {
+      $summary[$field] = rgsx_debug_summarize_value($info);
+      continue;
+    }
+    $names = $info['name'] ?? null;
+    $errors = $info['error'] ?? null;
+    $sizes = $info['size'] ?? null;
+    if (is_array($names)) {
+      $summary[$field] = [
+        'count' => count($names),
+        'names' => array_slice(array_map('basename', $names), 0, 5),
+        'errors' => is_array($errors) ? array_slice($errors, 0, 5) : $errors,
+        'sizes' => is_array($sizes) ? array_slice($sizes, 0, 5) : $sizes,
+      ];
+      continue;
+    }
+    $summary[$field] = [
+      'name' => is_string($names) ? basename($names) : $names,
+      'error' => $errors,
+      'size' => $sizes,
+    ];
+  }
+  return $summary;
+}
+
+rgsx_debug_log('request', [
+  'method' => $_SERVER['REQUEST_METHOD'] ?? 'CLI',
+  'uri' => $_SERVER['REQUEST_URI'] ?? '',
+  'get' => !empty($_GET) ? rgsx_debug_summarize_map($_GET) : new stdClass(),
+  'post_action' => $_POST['action'] ?? '',
+  'post' => !empty($_POST) ? rgsx_debug_summarize_map($_POST) : new stdClass(),
+  'files' => !empty($_FILES) ? rgsx_debug_summarize_files($_FILES) : new stdClass(),
+]);
+
+// Force local base URL for preview images
+$currentScheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || 
+                 (!empty($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443) ? 'https' : 'http';
+$currentHost = $_SERVER['HTTP_HOST'] ?? '127.0.0.1:8088';
+$currentScript = $_SERVER['SCRIPT_NAME'] ?? '/rgsx_sources_manager.php';
+$baseUrl = $currentScheme . '://' . $currentHost . $currentScript;
+
+// ---------------- Internationalisation (i18n) ---------------
+// Available languages
+$availableLangs = ['fr','en'];
+$lang = $_POST['lang'] ?? $_GET['lang'] ?? ($_SESSION['lang'] ?? 'fr');
+if (!in_array($lang, $availableLangs, true)) { $lang = 'fr'; }
+$_SESSION['lang'] = $lang;
+$langFile = __DIR__ . '/assets/lang/' . $lang . '.json';
+$LANG = [];
+if (is_file($langFile)) {
+  $raw = @file_get_contents($langFile);
+  $arr = json_decode($raw, true);
+  if (is_array($arr)) { $LANG = $arr; }
+}
+// Translation helper
+function t(string $key, string $fallback = ''): string {
+  global $LANG; return isset($LANG[$key]) && $LANG[$key] !== '' ? $LANG[$key] : ($fallback !== '' ? $fallback : $key);
+}
+
+// Unified RGSX Sources Manager
+// - Scrape (1fichier / Myrient / Archive.org / EdgeEmu.net) to create platform game JSONs
+// - Create/Edit systems_list.json (from scratch or upload)
+// - Create/Edit per-platform games JSON
+// - Package ZIP: systems_list.json + images/ + games/
+
+// -------------- Utilities & Shared -----------------
+function is_url($str) { return filter_var($str, FILTER_VALIDATE_URL); }
+function is_html_block($str) { return preg_match('/<!doctype|<(tr|table|html|body|pre|main|ul|li|div)[\s>]/i', $str); }
+function read_uploaded_scrape_text_file(string $fieldName, ?string &$error = null): string {
+  if (!isset($_FILES[$fieldName]) || !is_array($_FILES[$fieldName])) {
+    return '';
+  }
+
+  $upload = $_FILES[$fieldName];
+  $errorCode = (int)($upload['error'] ?? UPLOAD_ERR_NO_FILE);
+  if ($errorCode === UPLOAD_ERR_NO_FILE) {
+    return '';
+  }
+  if ($errorCode !== UPLOAD_ERR_OK) {
+    switch ($errorCode) {
+      case UPLOAD_ERR_INI_SIZE:
+      case UPLOAD_ERR_FORM_SIZE:
+        $error = t('err.scrape_urls_file_too_large', 'Text file too large (server limits).');
+        break;
+      case UPLOAD_ERR_PARTIAL:
+        $error = t('err.scrape_urls_file_partial', 'Text file upload was interrupted.');
+        break;
+      case UPLOAD_ERR_NO_TMP_DIR:
+        $error = t('err.upload_no_tmp_dir', 'Temporary folder missing on server.');
+        break;
+      case UPLOAD_ERR_CANT_WRITE:
+        $error = t('err.upload_cant_write', 'Unable to write uploaded file to disk.');
+        break;
+      case UPLOAD_ERR_EXTENSION:
+        $error = t('err.upload_blocked_extension', 'Upload blocked by a PHP extension.');
+        break;
+      default:
+        $error = t('err.scrape_urls_file_unknown', 'Unknown error while uploading text file.');
+        break;
+    }
+    return '';
+  }
+
+  $originalName = trim((string)($upload['name'] ?? ''));
+  $tmpPath = (string)($upload['tmp_name'] ?? '');
+  if ($originalName === '' || $tmpPath === '') {
+    $error = t('err.scrape_urls_file_invalid', 'Invalid text file.');
+    return '';
+  }
+
+  $extension = strtolower((string)pathinfo($originalName, PATHINFO_EXTENSION));
+  if ($extension !== '' && !in_array($extension, ['txt', 'csv', 'list'], true)) {
+    $error = t('err.scrape_urls_file_type', 'The links file must be a text file (.txt, .csv, .list).');
+    return '';
+  }
+
+  $contents = @file_get_contents($tmpPath);
+  if ($contents === false) {
+    $error = t('err.scrape_urls_file_read', 'Unable to read uploaded text file.');
+    return '';
+  }
+
+  if (strncmp($contents, "\xEF\xBB\xBF", 3) === 0) {
+    $contents = substr($contents, 3);
+  }
+
+  return trim(str_replace(["\r\n", "\r"], "\n", $contents));
+}
+function build_scrape_input_label(string $input, int $index, bool $isHtml): string {
+  if (!$isHtml) return $input !== '' ? $input : ('Entree #' . ($index + 1));
+  if (preg_match('/<title[^>]*>(.*?)<\/title>/is', $input, $m)) {
+    $title = trim(html_entity_decode(strip_tags($m[1]), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+    if ($title !== '') return 'HTML: ' . $title;
+  }
+  return 'HTML colle #' . ($index + 1);
+}
+function format_bytes($bytes) {
+    if (!is_numeric($bytes)) return $bytes;
+    $bytes = (float)$bytes;
+    if ($bytes < 1024) return $bytes . ' B';
+    $units = ['KB','MB','GB','TB','PB'];
+    $i = -1;
+    do { $bytes /= 1024; $i++; } while ($bytes >= 1024 && $i < count($units)-1);
+    return sprintf('%.2f %s', $bytes, $units[$i]);
+}
+
+function parse_file_size_to_bytes($sizeStr) {
+    if (!$sizeStr || trim($sizeStr) === '') return 0;
+    
+    $sizeStr = trim($sizeStr);
+    
+    // Pattern plus large pour capturer différents formats
+    // Exemples: "1.5MB", "942.1K", "1,234 GB", "500 bytes", "1.0M"
+    if (preg_match('/(\d+(?:[.,]\d+)?)\s*([KMGTPE]?)([BI]?)/i', $sizeStr, $matches)) {
+        $number = (float)str_replace(',', '.', $matches[1]);
+        $unit = strtoupper($matches[2]); // K, M, G, T, P, E
+        
+        $multiplier = 1;
+        switch ($unit) {
+            case 'K': $multiplier = 1024; break;
+            case 'M': $multiplier = 1024 * 1024; break;
+            case 'G': $multiplier = 1024 * 1024 * 1024; break;
+            case 'T': $multiplier = 1024 * 1024 * 1024 * 1024; break;
+            case 'P': $multiplier = 1024 * 1024 * 1024 * 1024 * 1024; break;
+            case 'E': $multiplier = 1024 * 1024 * 1024 * 1024 * 1024 * 1024; break;
+        }
+        
+        return (int)($number * $multiplier);
+    }
+    
+    // Pattern pour capturer juste les nombres (bytes)
+    if (preg_match('/(\d+(?:[.,]\d+)?)/', $sizeStr, $matches)) {
+        return (int)((float)str_replace(',', '.', $matches[1]));
+    }
+    
+    return 0;
+}
+
+function calculate_total_size($rows) {
+    $totalBytes = 0;
+    $debugSizes = [];
+    
+    foreach ($rows as $row) {
+        // $row[2] contient la taille (nom, url, taille)
+        if (isset($row[2]) && !empty($row[2])) {
+            $sizeStr = $row[2];
+            $bytes = parse_file_size_to_bytes($sizeStr);
+            $totalBytes += $bytes;
+            
+            // Garder quelques exemples pour debug
+            if (count($debugSizes) < 3) {
+                $debugSizes[] = "$sizeStr → $bytes bytes";
+            }
+        }
+    }
+    
+    $result = format_bytes($totalBytes);
+    
+    // Debug temporaire : afficher quelques exemples si la taille totale est 0
+    if ($totalBytes == 0 && !empty($debugSizes)) {
+        $result .= ' (debug: ' . implode(', ', $debugSizes) . ')';
+    }
+    
+    return $result;
+}
+
+// Parse pasted direct row format, e.g. "name|title_id|url" or "name|url".
+function parse_piped_source_row(string $line, array $validExtensions): ?array {
+  $line = trim($line);
+  if ($line === '' || strpos($line, '|') === false) {
+    return null;
+  }
+
+  $parts = array_map('trim', explode('|', $line));
+  if (count($parts) < 2) {
+    return null;
+  }
+
+  $name = '';
+  $url = '';
+  $size = '';
+
+  if (count($parts) >= 3) {
+    // Common expected format: name|title_id|url
+    $name = (string)$parts[0];
+    $url = (string)$parts[2];
+    if (count($parts) >= 4) {
+      $size = (string)$parts[3];
+    }
+  } else {
+    // Fallback: name|url
+    $name = (string)$parts[0];
+    $url = (string)$parts[1];
+  }
+
+  if ($name === '' || $url === '' || !is_url($url)) {
+    return null;
+  }
+
+  $path = parse_url($url, PHP_URL_PATH);
+  $ext = is_string($path) ? strtolower(pathinfo($path, PATHINFO_EXTENSION)) : '';
+  if ($ext !== '' && !in_array($ext, $validExtensions, true)) {
+    return null;
+  }
+
+  return [$name, normalize_url_like($url), $size];
+}
+
+function parse_direct_source_url_row(string $line, array $validExtensions, array $torrentExtensions = []): ?array {
+  $line = trim($line);
+  if ($line === '' || strpos($line, '|') !== false || !is_url($line)) {
+    return null;
+  }
+
+  if (is_torrent_url($line)) {
+    return null; // handled separately with immediate expansion
+  }
+
+  $normalizedUrl = normalize_url_like($line);
+  $path = parse_url($normalizedUrl, PHP_URL_PATH);
+  $name = is_string($path) ? urldecode(basename($path)) : '';
+  $ext = is_string($path) ? strtolower(pathinfo($path, PATHINFO_EXTENSION)) : '';
+  if ($name === '') {
+    return null;
+  }
+  if ($ext !== '' && !in_array($ext, $validExtensions, true)) {
+    return null;
+  }
+
+  return [$name, $normalizedUrl, ''];
+}
+
+// Normalize URL-like strings: add percent-encoding for spaces and query values
+function normalize_url_like(string $u): string {
+  $u = trim($u);
+  if ($u === '') return $u;
+  // If already valid, return as-is
+  if (filter_var($u, FILTER_VALIDATE_URL)) return $u;
+  $parts = @parse_url($u);
+  if (!$parts || empty($parts['scheme']) || empty($parts['host'])) {
+    // Simple fallback: encode spaces only
+    return str_replace(' ', '%20', $u);
+  }
+  $scheme = $parts['scheme'] . '://';
+  $auth = '';
+  if (isset($parts['user'])) { $auth .= $parts['user']; if (isset($parts['pass'])) { $auth .= ':' . $parts['pass']; } $auth .= '@'; }
+  $host = $parts['host'] ?? '';
+  $port = isset($parts['port']) ? (':' . $parts['port']) : '';
+  // Encode each path segment (preserving slashes)
+  $path = '';
+  if (isset($parts['path'])) {
+    $segs = explode('/', $parts['path']);
+    foreach ($segs as &$seg) { $seg = rawurlencode($seg); }
+    unset($seg);
+    $path = implode('/', $segs);
+    // Preserve leading slash if present
+    if (isset($parts['path'][0]) && $parts['path'][0] === '/' && (!isset($path[0]) || $path[0] !== '/')) { $path = '/' . $path; }
+  }
+  // Encode query parameters with RFC3986 (spaces -> %20)
+  $query = '';
+  if (isset($parts['query'])) {
+    parse_str($parts['query'], $qarr);
+    $query = http_build_query($qarr, '', '&', PHP_QUERY_RFC3986);
+  }
+  $frag = isset($parts['fragment']) ? ('#' . rawurlencode($parts['fragment'])) : '';
+  $rebuilt = $scheme . $auth . $host . $port . $path . ($query !== '' ? ('?' . $query) : '') . $frag;
+  if (filter_var($rebuilt, FILTER_VALIDATE_URL)) return $rebuilt;
+  // Last resort: replace spaces
+  return str_replace(' ', '%20', $u);
+}
+
+function normalize_archiveorg_scrape_url(string $url): string {
+  $normalized = normalize_url_like(trim($url));
+  if ($normalized === '' || !is_url($normalized)) {
+    return $normalized;
+  }
+
+  $parts = @parse_url($normalized);
+  if (!$parts || empty($parts['host'])) {
+    return $normalized;
+  }
+
+  $host = strtolower((string)$parts['host']);
+  if ($host !== 'archive.org' && $host !== 'www.archive.org') {
+    return $normalized;
+  }
+
+  $path = (string)($parts['path'] ?? '');
+  if (preg_match('~^/details/([^/?#]+)~i', $path, $m)) {
+    $identifier = trim((string)$m[1]);
+    if ($identifier !== '') {
+      return 'https://archive.org/download/' . rawurlencode(rawurldecode($identifier));
+    }
+  }
+
+  return $normalized;
+}
+
+function rgsx_pwd_json_path(): string {
+  return __DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'pwd.json';
+}
+
+function normalize_scrape_password_lookup_url(string $url, bool $includeQuery = true): string {
+  $normalized = normalize_url_like(trim($url));
+  $parts = @parse_url($normalized);
+  if (!$parts || empty($parts['host'])) {
+    return $normalized;
+  }
+
+  $scheme = strtolower((string)($parts['scheme'] ?? 'https'));
+  $host = strtolower((string)$parts['host']);
+  $path = (string)($parts['path'] ?? '');
+  if ($path === '') {
+    $path = '/';
+  }
+  if ($path !== '/') {
+    $path = rtrim($path, '/');
+    if ($path === '') {
+      $path = '/';
+    }
+  }
+
+  $query = '';
+  if ($includeQuery && !empty($parts['query'])) {
+    parse_str((string)$parts['query'], $queryParams);
+    if (is_array($queryParams) && !empty($queryParams)) {
+      unset($queryParams['af'], $queryParams['lg']);
+      ksort($queryParams);
+      if (!empty($queryParams)) {
+        $query = http_build_query($queryParams, '', '&', PHP_QUERY_RFC3986);
+      }
+    }
+  }
+
+  return $scheme . '://' . $host . $path . ($query !== '' ? ('?' . $query) : '');
+}
+
+function load_scrape_password_map(): array {
+  static $cache = null;
+  if (is_array($cache)) {
+    return $cache;
+  }
+
+  $cache = [];
+  $path = rgsx_pwd_json_path();
+  if (!is_file($path)) {
+    return $cache;
+  }
+
+  $raw = @file_get_contents($path);
+  if (!is_string($raw) || trim($raw) === '') {
+    return $cache;
+  }
+
+  $decoded = json_decode($raw, true);
+  if (!is_array($decoded)) {
+    return $cache;
+  }
+
+  $entries = [];
+  if (array_keys($decoded) === range(0, count($decoded) - 1)) {
+    $entries = $decoded;
+  } else if (isset($decoded['entries']) && is_array($decoded['entries'])) {
+    $entries = $decoded['entries'];
+  } else {
+    foreach ($decoded as $url => $password) {
+      if (is_string($url) && is_string($password)) {
+        $entries[] = ['url' => $url, 'password' => $password];
+      }
+    }
+  }
+
+  foreach ($entries as $entry) {
+    if (!is_array($entry)) {
+      continue;
+    }
+    $url = trim((string)($entry['url'] ?? ''));
+    $password = trim((string)($entry['password'] ?? ($entry['pwd'] ?? '')));
+    if ($url === '' || $password === '') {
+      continue;
+    }
+
+    $cache[normalize_scrape_password_lookup_url($url, true)] = $password;
+    $cache[normalize_scrape_password_lookup_url($url, false)] = $password;
+  }
+
+  return $cache;
+}
+
+function resolve_scrape_password_for_url(string $url): string {
+  $map = load_scrape_password_map();
+  if (empty($map)) {
+    return '';
+  }
+
+  $exactKey = normalize_scrape_password_lookup_url($url, true);
+  if (isset($map[$exactKey])) {
+    return $map[$exactKey];
+  }
+
+  $pathKey = normalize_scrape_password_lookup_url($url, false);
+  return $map[$pathKey] ?? '';
+}
+
+function is_torrent_url(string $url): bool {
+  $path = parse_url($url, PHP_URL_PATH);
+  return is_string($path) && preg_match('/\.torrent$/i', $path) === 1;
+}
+
+function build_torrent_source_row(string $url, array $extensions = []): array {
+  $path = parse_url($url, PHP_URL_PATH);
+  $label = is_string($path) ? urldecode(basename($path)) : '';
+  if ($label === '' || $label === '.' || $label === '..') {
+    $label = 'source.torrent';
+  }
+  $row = [$label, $url, 'TORRENT'];
+  if (!empty($extensions)) { $row[] = array_values($extensions); }
+  return $row;
+}
+
+function rgsx_torrent_entries_to_rows(array $entries, string $sourceUrl, array $extensions = []): array {
+  $rows = [];
+  foreach ($entries as $entry) {
+    $gameName = trim((string)($entry['name'] ?? ''));
+    if ($gameName === '') { continue; }
+    if (!empty($extensions)) {
+      $ext = strtolower(pathinfo($gameName, PATHINFO_EXTENSION));
+      if ($ext === '' || !in_array($ext, $extensions, true)) { continue; }
+    }
+    $sizeBytes = (int)($entry['size_bytes'] ?? 0);
+    $fileIndex = (int)($entry['index'] ?? 1);
+    $relativePath = (string)($entry['download_path'] ?? $entry['path'] ?? $gameName);
+    $rows[] = [
+      $gameName,
+      rgsx_build_torrent_download_url($sourceUrl, $fileIndex, $relativePath, $sizeBytes),
+      $sizeBytes > 0 ? rgsx_format_size_bytes($sizeBytes) : '',
+    ];
+  }
+  return $rows;
+}
+
+function rgsx_zip_progress_path(?string $progressKey = null): string {
+  $key = $progressKey !== null && $progressKey !== '' ? $progressKey : session_id();
+  return __DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'zip_progress_' . preg_replace('/[^a-zA-Z0-9_-]/', '_', $key) . '.json';
+}
+
+function rgsx_zip_progress_write(string $state, string $message, int $percent, array $extra = [], ?string $progressKey = null): void {
+  $payload = array_merge([
+    'state' => $state,
+    'message' => $message,
+    'percent' => max(0, min(100, $percent)),
+    'updated_at' => date('c'),
+  ], $extra);
+  @file_put_contents(rgsx_zip_progress_path($progressKey), json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+}
+
+function rgsx_zip_progress_read(?string $progressKey = null): array {
+  $path = rgsx_zip_progress_path($progressKey);
+  if (!is_file($path)) {
+    return ['state' => 'idle', 'message' => '', 'percent' => 0];
+  }
+  $raw = @file_get_contents($path);
+  $data = is_string($raw) ? json_decode($raw, true) : null;
+  return is_array($data) ? $data : ['state' => 'idle', 'message' => '', 'percent' => 0];
+}
+
+function rgsx_zip_progress_clear(?string $progressKey = null): void {
+  $path = rgsx_zip_progress_path($progressKey);
+  if (is_file($path)) { @unlink($path); }
+}
+
+function rgsx_cache_decode_text($value): string {
+  if (is_string($value)) { return $value; }
+  if (is_int($value) || is_float($value)) { return (string)$value; }
+  return '';
+}
+
+function rgsx_bdecode(string $data, int &$index = 0) {
+  $length = strlen($data);
+  if ($index >= $length) {
+    throw new RuntimeException('Unexpected end of bencode payload');
+  }
+  $token = $data[$index];
+  if ($token === 'i') {
+    $end = strpos($data, 'e', $index);
+    if ($end === false) { throw new RuntimeException('Invalid integer token'); }
+    $value = (int)substr($data, $index + 1, $end - $index - 1);
+    $index = $end + 1;
+    return $value;
+  }
+  if ($token === 'l') {
+    $index++;
+    $items = [];
+    while ($index < $length && $data[$index] !== 'e') {
+      $items[] = rgsx_bdecode($data, $index);
+    }
+    $index++;
+    return $items;
+  }
+  if ($token === 'd') {
+    $index++;
+    $items = [];
+    while ($index < $length && $data[$index] !== 'e') {
+      $key = rgsx_bdecode($data, $index);
+      $items[(string)$key] = rgsx_bdecode($data, $index);
+    }
+    $index++;
+    return $items;
+  }
+  if (ctype_digit($token)) {
+    $sep = strpos($data, ':', $index);
+    if ($sep === false) { throw new RuntimeException('Invalid string token'); }
+    $strLength = (int)substr($data, $index, $sep - $index);
+    $start = $sep + 1;
+    $value = substr($data, $start, $strLength);
+    $index = $start + $strLength;
+    return $value;
+  }
+  throw new RuntimeException('Unsupported bencode token: ' . $token);
+}
+
+function rgsx_extract_torrent_source($item): ?array {
+  if (is_array($item)) {
+    $isList = array_keys($item) === range(0, count($item) - 1);
+    if ($isList) {
+      if (count($item) < 2) { return null; }
+      $sourceName = trim((string)($item[0] ?? ''));
+      $sourceUrl = isset($item[1]) && is_string($item[1]) ? trim($item[1]) : '';
+      if ($sourceUrl !== '' && is_torrent_url($sourceUrl)) {
+        $extensions = (isset($item[3]) && is_array($item[3])) ? $item[3] : [];
+        return [$sourceName, $sourceUrl, $extensions];
+      }
+      return null;
+    }
+
+    $sourceUrl = '';
+    foreach (['torrent_url', 'url', 'download', 'link'] as $candidateKey) {
+      if (isset($item[$candidateKey]) && is_string($item[$candidateKey]) && trim($item[$candidateKey]) !== '') {
+        $sourceUrl = trim($item[$candidateKey]);
+        break;
+      }
+    }
+    if ($sourceUrl === '') { return null; }
+    $sourceType = strtolower(trim((string)($item['type'] ?? $item['source_type'] ?? $item['source'] ?? '')));
+    if ($sourceType === 'torrent' || is_torrent_url($sourceUrl)) {
+      $sourceName = trim((string)($item['game_name'] ?? $item['name'] ?? $item['title'] ?? $item['game'] ?? $item['label'] ?? ''));
+      if ($sourceName === '') {
+        $path = parse_url($sourceUrl, PHP_URL_PATH);
+        $sourceName = is_string($path) ? urldecode(basename($path)) : '';
+      }
+      $extensions = (isset($item['extensions']) && is_array($item['extensions'])) ? $item['extensions'] : [];
+      return [$sourceName, $sourceUrl, $extensions];
+    }
+  }
+  return null;
+}
+
+function rgsx_extract_torrent_entries_from_bytes(string $payload, string $sourceUrl): array {
+  $index = 0;
+  $torrentData = rgsx_bdecode($payload, $index);
+  if (!is_array($torrentData) || !isset($torrentData['info']) || !is_array($torrentData['info'])) {
+    throw new RuntimeException('Torrent metadata does not contain an info dictionary');
+  }
+  $info = $torrentData['info'];
+  $rootName = trim(rgsx_cache_decode_text($info['name.utf-8'] ?? $info['name'] ?? ''));
+  $entries = [];
+  if (isset($info['files']) && is_array($info['files'])) {
+    $fileIndex = 0;
+    foreach ($info['files'] as $fileEntry) {
+      if (!is_array($fileEntry)) { continue; }
+      $fileIndex++;
+      $pathParts = $fileEntry['path.utf-8'] ?? $fileEntry['path'] ?? [];
+      if (!is_array($pathParts)) { continue; }
+      $parts = [];
+      foreach ($pathParts as $part) {
+        $partText = trim(rgsx_cache_decode_text($part));
+        if ($partText !== '') { $parts[] = $partText; }
+      }
+      if (empty($parts)) { continue; }
+      $fullPath = implode('/', $parts);
+      $downloadPath = implode('/', array_values(array_filter([$rootName, $fullPath], static fn($value) => $value !== '')));
+      $entries[] = [
+        'name' => end($parts),
+        'path' => $fullPath,
+        'download_path' => $downloadPath !== '' ? $downloadPath : $fullPath,
+        'index' => $fileIndex,
+        'size_bytes' => (int)($fileEntry['length'] ?? 0),
+        'source_url' => $sourceUrl,
+      ];
+    }
+  } elseif ($rootName !== '') {
+    $entries[] = [
+      'name' => $rootName,
+      'path' => $rootName,
+      'download_path' => $rootName,
+      'index' => 1,
+      'size_bytes' => (int)($info['length'] ?? 0),
+      'source_url' => $sourceUrl,
+    ];
+  }
+
+  $duplicateNames = [];
+  foreach ($entries as $entry) {
+    $name = (string)($entry['name'] ?? '');
+    $duplicateNames[$name] = ($duplicateNames[$name] ?? 0) + 1;
+  }
+  foreach ($entries as &$entry) {
+    $name = (string)($entry['name'] ?? '');
+    if (($duplicateNames[$name] ?? 0) > 1) {
+      $entry['name'] = (string)($entry['path'] ?? $name);
+    }
+  }
+  unset($entry);
+
+  return $entries;
+}
+
+function rgsx_fetch_torrent_entries_php(string $sourceUrl): array {
+  $context = stream_context_create([
+    'http' => [
+      'method' => 'GET',
+      'timeout' => 30,
+      'header' => implode("\r\n", [
+        'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'Accept: */*',
+      ]),
+      'follow_location' => 1,
+      'max_redirects' => 5,
+    ],
+    'ssl' => [
+      'verify_peer' => true,
+      'verify_peer_name' => true,
+    ],
+  ]);
+  $payload = @file_get_contents($sourceUrl, false, $context);
+  if (!is_string($payload) || $payload === '') {
+    throw new RuntimeException('Unable to download torrent manifest');
+  }
+  return rgsx_extract_torrent_entries_from_bytes($payload, $sourceUrl);
+}
+
+function rgsx_format_size_bytes(int $sizeBytes): string {
+  if ($sizeBytes < 1024) { return $sizeBytes . ' B'; }
+  if ($sizeBytes < 1024 * 1024) { return number_format($sizeBytes / 1024, 1, '.', '') . ' KB'; }
+  if ($sizeBytes < 1024 * 1024 * 1024) { return number_format($sizeBytes / (1024 * 1024), 1, '.', '') . ' MB'; }
+  return number_format($sizeBytes / (1024 * 1024 * 1024), 2, '.', '') . ' GB';
+}
+
+function rgsx_build_torrent_download_url(string $sourceUrl, int $fileIndex, string $relativePath, ?int $sizeBytes = null): string {
+  $params = [
+    'source' => $sourceUrl,
+    'index' => (string)max(1, $fileIndex),
+    'path' => $relativePath,
+  ];
+  if (is_int($sizeBytes) && $sizeBytes > 0) {
+    $params['size'] = (string)$sizeBytes;
+  }
+  return 'rgsx+torrent://download?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+}
+
+function rgsx_clean_display_name($rawName, ?string $platformId = null): string {
+  $text = trim((string)$rawName);
+  if ($text === '') { return ''; }
+  $normalized = str_replace('\\', '/', $text);
+  $leafName = basename($normalized);
+  $displayName = pathinfo($leafName, PATHINFO_FILENAME);
+  $displayName = trim((string)$displayName);
+  if ($platformId !== null && $platformId !== '') {
+    $pattern = '/^' . preg_quote($platformId, '/') . '[\s\-_:]+/i';
+    $updated = trim((string)preg_replace($pattern, '', $displayName));
+    if ($updated !== '') {
+      $displayName = $updated;
+    }
+  }
+  return trim($displayName, " -_/");
+}
+
+function rgsx_build_platform_search_entries_php(array $rows, array &$torrentManifestCache, array &$warnings, string $platformId): array {
+  $entries = [];
+  foreach ($rows as $item) {
+    $torrentSource = rgsx_extract_torrent_source($item);
+    if (is_array($torrentSource)) {
+      [$sourceName, $sourceUrl, $torrentExtensions] = $torrentSource;
+      if (!isset($torrentManifestCache[$sourceUrl]) || !is_array($torrentManifestCache[$sourceUrl])) {
+        try {
+          $torrentManifestCache[$sourceUrl] = rgsx_fetch_torrent_entries_php($sourceUrl);
+        } catch (Throwable $exc) {
+          $warnings[] = $platformId . ': failed to build torrent cache for ' . ($sourceName !== '' ? $sourceName : $sourceUrl) . ': ' . $exc->getMessage();
+          $torrentManifestCache[$sourceUrl] = [];
+        }
+      }
+      foreach ($torrentManifestCache[$sourceUrl] as $torrentEntry) {
+        $gameName = trim((string)($torrentEntry['name'] ?? ''));
+        if ($gameName === '') { continue; }
+        // Filter by stored extensions if any were set at scrape time
+        if (!empty($torrentExtensions)) {
+          $entryExt = strtolower(pathinfo($gameName, PATHINFO_EXTENSION));
+          if ($entryExt === '' || !in_array($entryExt, $torrentExtensions, true)) { continue; }
+        }
+        $sizeBytes = (int)($torrentEntry['size_bytes'] ?? 0);
+        $fileIndex = (int)($torrentEntry['index'] ?? 1);
+        $relativePath = (string)($torrentEntry['download_path'] ?? $torrentEntry['path'] ?? $gameName);
+        $entries[] = [
+          'platform_id' => $platformId,
+          'game_name' => $gameName,
+          'display_name' => rgsx_clean_display_name($gameName, $platformId),
+          'url' => rgsx_build_torrent_download_url($sourceUrl, $fileIndex, $relativePath, $sizeBytes),
+          'size' => $sizeBytes > 0 ? rgsx_format_size_bytes($sizeBytes) : '',
+          'size_bytes' => $sizeBytes,
+        ];
+      }
+      continue;
+    }
+
+    if (is_array($item)) {
+      $isList = array_keys($item) === range(0, count($item) - 1);
+      if ($isList) {
+        $gameName = trim((string)($item[0] ?? ''));
+        if ($gameName === '') { continue; }
+        $entries[] = [
+          'platform_id' => $platformId,
+          'game_name' => $gameName,
+          'display_name' => rgsx_clean_display_name($gameName, $platformId),
+          'url' => isset($item[1]) && is_string($item[1]) ? $item[1] : '',
+          'size' => isset($item[2]) ? trim((string)$item[2]) : '',
+          'size_bytes' => 0,
+        ];
+        continue;
+      }
+
+      $gameName = trim((string)($item['game_name'] ?? $item['name'] ?? $item['title'] ?? $item['game'] ?? ''));
+      if ($gameName === '') { continue; }
+      $entries[] = [
+        'platform_id' => $platformId,
+        'game_name' => $gameName,
+        'display_name' => rgsx_clean_display_name($gameName, $platformId),
+        'url' => trim((string)($item['url'] ?? $item['download'] ?? $item['link'] ?? $item['href'] ?? '')),
+        'size' => trim((string)($item['size'] ?? $item['filesize'] ?? $item['length'] ?? '')),
+        'size_bytes' => 0,
+      ];
+      continue;
+    }
+
+    if (is_string($item)) {
+      $gameName = trim($item);
+      if ($gameName === '') { continue; }
+      $entries[] = [
+        'platform_id' => $platformId,
+        'game_name' => $gameName,
+        'display_name' => rgsx_clean_display_name($gameName, $platformId),
+        'url' => '',
+        'size' => '',
+        'size_bytes' => 0,
+      ];
+      continue;
+    }
+
+    if ($item !== null) {
+      $gameName = trim((string)$item);
+      if ($gameName === '') { continue; }
+      $entries[] = [
+        'platform_id' => $platformId,
+        'game_name' => $gameName,
+        'display_name' => rgsx_clean_display_name($gameName, $platformId),
+        'url' => '',
+        'size' => '',
+        'size_bytes' => 0,
+      ];
+    }
+  }
+  return $entries;
+}
+
+function remove_tree(string $path): void {
+  if ($path === '' || !file_exists($path)) { return; }
+  if (is_file($path) || is_link($path)) {
+    @unlink($path);
+    return;
+  }
+  $items = @scandir($path);
+  if (!is_array($items)) { return; }
+  foreach ($items as $item) {
+    if ($item === '.' || $item === '..') { continue; }
+    remove_tree($path . DIRECTORY_SEPARATOR . $item);
+  }
+  @rmdir($path);
+}
+
+function extract_script_cookie_values(string $html): array {
+  $cookies = [];
+  if ($html === '') {
+    return $cookies;
+  }
+  if (preg_match_all('/document\.cookie\s*=\s*"([^\"]+)"/i', $html, $matches)) {
+    foreach ($matches[1] as $cookieSpec) {
+      $parts = explode(';', (string)$cookieSpec);
+      $pair = trim((string)($parts[0] ?? ''));
+      if ($pair === '' || strpos($pair, '=') === false) {
+        continue;
+      }
+      [$name, $value] = array_map('trim', explode('=', $pair, 2));
+      if ($name === '') {
+        continue;
+      }
+      $cookies[$name] = $value;
+    }
+  }
+  return $cookies;
+}
+
+function is_1fichier_reload_gate_html(string $html): bool {
+  if ($html === '') {
+    return false;
+  }
+  return stripos($html, '1fichier.com: Cloud Storage') !== false
+    && stripos($html, 'window.location.reload()') !== false
+    && stripos($html, 'document.cookie') !== false;
+}
+
+function merge_cookie_header(array $headers, array $cookies): array {
+  if (empty($cookies)) {
+    return $headers;
+  }
+  $cookieParts = [];
+  $filtered = [];
+  foreach ($headers as $header) {
+    if (stripos($header, 'Cookie:') === 0) {
+      $existing = trim(substr($header, 7));
+      if ($existing !== '') {
+        foreach (preg_split('/;\s*/', $existing) as $pair) {
+          if ($pair === '' || strpos($pair, '=') === false) {
+            continue;
+          }
+          [$name, $value] = array_map('trim', explode('=', $pair, 2));
+          if ($name !== '') {
+            $cookies[$name] = $value;
+          }
+        }
+      }
+      continue;
+    }
+    $filtered[] = $header;
+  }
+  foreach ($cookies as $name => $value) {
+    $cookieParts[] = $name . '=' . $value;
+  }
+  $filtered[] = 'Cookie: ' . implode('; ', $cookieParts);
+  return $filtered;
+}
+
+// Robust HTTP fetch (cURL with fallback to file_get_contents) + debug info
+function http_fetch(string $url, int $timeout = 30, array $extraHeaders = []): array {
+  $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+  $host = parse_url($url, PHP_URL_HOST) ?: '';
+  $isArchive = stripos($host, 'archive.org') !== false;
+  $is1fichier = stripos($host, '1fichier.com') !== false;
+  // Try cURL if available
+  if (function_exists('curl_init')) {
+    $try = function($targetUrl, $verifyPeer, ?array $headersOverride = null) use ($timeout, $ua, $isArchive, $extraHeaders) {
+      $ch = curl_init($targetUrl);
+      $headers = [
+          'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language: en-US,en;q=0.8',
+          'Cache-Control: no-cache',
+          'Connection: keep-alive',
+          'Pragma: no-cache',
+          'Upgrade-Insecure-Requests: 1'
+      ];
+          if ($headersOverride !== null) { $headers = $headersOverride; }
+      if ($isArchive) { $headers[] = 'Referer: https://archive.org/'; $headers[] = 'Origin: https://archive.org'; }
+      if (!empty($extraHeaders)) { $headers = array_merge($headers, $extraHeaders); }
+      curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS => 5,
+        CURLOPT_CONNECTTIMEOUT => $timeout,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_USERAGENT => $ua,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_ENCODING => '', // allow gzip/deflate
+        CURLOPT_HEADER => true,
+        CURLOPT_SSL_VERIFYPEER => $verifyPeer,
+      ]);
+      $resp = curl_exec($ch);
+      $err = $resp === false ? curl_error($ch) : null;
+      $errno = curl_errno($ch);
+      $info = curl_getinfo($ch);
+      unset($ch);
+      if ($resp === false) {
+        return [false, 0, '', $err, $info, ''];
+      }
+      $hsz = (int)($info['header_size'] ?? 0);
+      $headers = $hsz > 0 ? substr($resp, 0, $hsz) : '';
+      $body = $hsz > 0 ? substr($resp, $hsz) : $resp;
+      $code = (int)($info['http_code'] ?? 0);
+      $ok = ($code >= 200 && $code < 300) && $body !== '';
+      return [$ok, $code, $body, null, $info, $headers];
+    };
+    $request = function($targetUrl, ?array $headersOverride = null) use ($try) {
+      [$ok, $code, $body, $err, $info, $headers] = $try($targetUrl, true, $headersOverride);
+      if (!$ok && $code === 0 && is_string($err) && stripos($err, 'certificate') !== false) {
+        return $try($targetUrl, false, $headersOverride);
+      }
+      return [$ok, $code, $body, $err, $info, $headers];
+    };
+    // First with SSL verify
+    [$ok, $code, $body, $err, $info] = $request($url);
+    if ($is1fichier && $body !== '' && is_1fichier_reload_gate_html($body)) {
+      $gateCookies = extract_script_cookie_values($body);
+      if (!empty($gateCookies)) {
+        [$okGate, $codeGate, $bodyGate, $errGate, $infoGate] = $request($url, merge_cookie_header([], $gateCookies));
+        if ($bodyGate !== '') {
+          $ok = $okGate;
+          $code = $codeGate;
+          $body = $bodyGate;
+          $err = $errGate;
+          $info = $infoGate;
+        }
+      }
+    }
+    if (!$ok && $code === 0) { // network error after retry path
+      [$ok2, $code2, $body2, $err2, $info2] = $request($url);
+      return [
+        'ok' => $ok2,
+        'status' => $code2,
+        'body' => $body2,
+        'error' => $ok2 ? null : ($err2 ?: 'cURL error'),
+        'effective_url' => $info2['url'] ?? $url
+      ];
+    }
+    // If Archive.org edge host returns 403, try same path on https://archive.org
+    $altArchive = null;
+    if (!$ok && $code === 403 && preg_match('#^ia\d+\.(?:us\.)?archive\.org$#i', $host)) {
+      $alt = preg_replace('#^https?://[^/]+#i', 'https://archive.org', $url);
+      if (is_string($alt) && $alt !== $url) {
+        $altArchive = $alt;
+        [$okAlt, $codeAlt, $bodyAlt, $errAlt, $infoAlt] = $try($alt, true);
+        if ($okAlt) {
+          return [
+            'ok' => true,
+            'status' => $codeAlt,
+            'body' => $bodyAlt,
+            'error' => null,
+            'effective_url' => $infoAlt['url'] ?? $alt
+          ];
+        }
+      }
+      // Try zipview.php as a fallback for browsing ZIP contents
+      $q = parse_url($url, PHP_URL_QUERY);
+      if (is_string($q)) {
+        parse_str($q, $qarr);
+        if (!empty($qarr['archive'])) {
+          $zip = $qarr['archive'];
+          $alt2 = 'https://archive.org/zipview.php?zip=' . rawurlencode($zip);
+          [$okAlt2, $codeAlt2, $bodyAlt2, $errAlt2, $infoAlt2] = $try($alt2, true);
+          if ($okAlt2) {
+            return [
+              'ok' => true,
+              'status' => $codeAlt2,
+              'body' => $bodyAlt2,
+              'error' => null,
+              'effective_url' => $infoAlt2['url'] ?? $alt2
+            ];
+          }
+        }
+      }
+    }
+    // If view_archive.php returns 403, try adding access=1 (some IA items require it)
+    if (!$ok && $code === 403 && stripos($url, 'view_archive.php') !== false) {
+      $withAccess = function($u) {
+        $p = @parse_url($u);
+        if (!$p) return null;
+        $q = [];
+        if (!empty($p['query'])) { parse_str($p['query'], $q); }
+        if (!empty($q['access'])) return null;
+        $q['access'] = '1';
+        $rebuilt = ($p['scheme'] ?? 'https') . '://' . ($p['host'] ?? 'archive.org') . ($p['path'] ?? '/view_archive.php');
+        $rebuilt .= '?' . http_build_query($q, '', '&', PHP_QUERY_RFC3986);
+        return $rebuilt;
+      };
+      $cand = $withAccess($url);
+      if ($cand) {
+        [$okA, $codeA, $bodyA, $errA, $infoA] = $try($cand, true);
+        if ($okA) {
+          return [
+            'ok' => true,
+            'status' => $codeA,
+            'body' => $bodyA,
+            'error' => null,
+            'effective_url' => $infoA['url'] ?? $cand
+          ];
+        }
+      }
+      if ($altArchive) {
+        $cand2 = $withAccess($altArchive);
+        if ($cand2) {
+          [$okB, $codeB, $bodyB, $errB, $infoB] = $try($cand2, true);
+          if ($okB) {
+            return [
+              'ok' => true,
+              'status' => $codeB,
+              'body' => $bodyB,
+              'error' => null,
+              'effective_url' => $infoB['url'] ?? $cand2
+            ];
+          }
+        }
+      }
+    }
+    // Detect Cloudflare challenge and retry with system curl.exe (better TLS fingerprint)
+    if ($body !== '' && (stripos($body, 'Just a moment') !== false || stripos($body, 'cf_chl_opt') !== false || stripos($body, 'challenge-platform') !== false)) {
+      $isWin = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN' || (defined('PHP_OS_FAMILY') && PHP_OS_FAMILY === 'Windows');
+      $curlExe = $isWin ? (is_file('C:\\Windows\\System32\\curl.exe') ? 'C:\\Windows\\System32\\curl.exe' : 'curl.exe') : 'curl';
+      $cmdParts = [$curlExe, '-s', '-L', '--max-time', (string)$timeout, '-H', 'User-Agent: ' . $ua,
+        '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        '-H', 'Accept-Language: en-US,en;q=0.8',
+        '-H', 'Cache-Control: no-cache',
+        '-H', 'Connection: keep-alive',
+        '-H', 'Upgrade-Insecure-Requests: 1'];
+      if (!empty($extraHeaders)) {
+        foreach ($extraHeaders as $eh) { $cmdParts[] = '-H'; $cmdParts[] = $eh; }
+      }
+      $cmdParts[] = $url;
+      $cmd = implode(' ', array_map('escapeshellarg', $cmdParts));
+      $curlBody = @shell_exec($cmd);
+      if ($curlBody !== null && $curlBody !== '' && stripos($curlBody, 'cf_chl_opt') === false && stripos($curlBody, 'Just a moment') === false) {
+        return [
+          'ok' => true,
+          'status' => 200,
+          'body' => $curlBody,
+          'error' => null,
+          'effective_url' => $url
+        ];
+      }
+    }
+    return [
+      'ok' => $ok,
+      'status' => $code,
+      'body' => $body,
+      'error' => $ok ? null : ($err ?: 'HTTP ' . $code),
+      'effective_url' => $info['url'] ?? $url
+    ];
+  }
+  // Fallback: file_get_contents
+  $headerStr = "Accept: text/html\r\nAccept-Language: en-US,en;q=0.8\r\nCache-Control: no-cache\r\nUpgrade-Insecure-Requests: 1\r\nAccept-Encoding: gzip, deflate\r\n";
+  if ($isArchive) { $headerStr .= "Referer: https://archive.org/\r\nOrigin: https://archive.org/\r\n"; }
+  if (!empty($extraHeaders)) { $headerStr .= implode("\r\n", $extraHeaders) . "\r\n"; }
+  $ctx = stream_context_create(['http' => [
+    'user_agent' => $ua,
+    'timeout' => $timeout,
+    'header' => $headerStr,
+    'ignore_errors' => true
+  ]]);
+  $body = @file_get_contents($url, false, $ctx);
+  $status = 0; $error = null;
+  if (isset($http_response_header) && is_array($http_response_header) && !empty($http_response_header)) {
+    // Parse HTTP status
+    foreach ($http_response_header as $hline) {
+      if (preg_match('#^HTTP/\S+\s+(\d{3})#', $hline, $m)) { $status = (int)$m[1]; break; }
+    }
+    // Detect gzip content
+    $isGzip = false;
+    foreach ($http_response_header as $hline) {
+      if (stripos($hline, 'Content-Encoding:') === 0 && stripos($hline, 'gzip') !== false) { $isGzip = true; break; }
+    }
+    if ($body !== false && $body !== '' && $isGzip) {
+      $decoded = @gzdecode($body);
+      if ($decoded !== false) { $body = $decoded; }
+    }
+  }
+  if ($body === false) {
+    $error = 'file_get_contents failed';
+    $body = '';
+  }
+  // On 403 from ia*.archive.org, attempt retry via https://archive.org host
+  if ($status === 403 && preg_match('#^ia\d+\.(?:us\.)?archive\.org$#i', $host)) {
+    $alt = preg_replace('#^https?://[^/]+#i', 'https://archive.org', $url);
+    if (is_string($alt) && $alt !== $url) {
+      $body2 = @file_get_contents($alt, false, $ctx);
+      $status2 = 0; $isGzip2 = false;
+      if (isset($http_response_header) && is_array($http_response_header)) {
+        foreach ($http_response_header as $hline) {
+          if (preg_match('#^HTTP/\S+\s+(\d{3})#', $hline, $m)) { $status2 = (int)$m[1]; }
+          if (stripos($hline, 'Content-Encoding:') === 0 && stripos($hline, 'gzip') !== false) { $isGzip2 = true; }
+        }
+      }
+      if ($body2 !== false && $isGzip2) { $dec2 = @gzdecode($body2); if ($dec2 !== false) { $body2 = $dec2; } }
+      if ($body2 !== false && ($status2 >= 200 && $status2 < 300)) {
+        return [
+          'ok' => true,
+          'status' => $status2,
+          'body' => $body2,
+          'error' => null,
+          'effective_url' => $alt
+        ];
+      }
+    }
+    // Try zipview.php on archive.org as last resort
+    $q = parse_url($url, PHP_URL_QUERY);
+    if (is_string($q)) {
+      parse_str($q, $qarr);
+      if (!empty($qarr['archive'])) {
+        $zip = $qarr['archive'];
+        $alt3 = 'https://archive.org/zipview.php?zip=' . rawurlencode($zip);
+        $body3 = @file_get_contents($alt3, false, $ctx);
+        $status3 = 0; $isGzip3 = false;
+        if (isset($http_response_header) && is_array($http_response_header)) {
+          foreach ($http_response_header as $hline) {
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#', $hline, $m)) { $status3 = (int)$m[1]; }
+            if (stripos($hline, 'Content-Encoding:') === 0 && stripos($hline, 'gzip') !== false) { $isGzip3 = true; }
+          }
+        }
+        if ($body3 !== false && $isGzip3) { $dec3 = @gzdecode($body3); if ($dec3 !== false) { $body3 = $dec3; } }
+        if ($body3 !== false && ($status3 >= 200 && $status3 < 300)) {
+          return [
+            'ok' => true,
+            'status' => $status3,
+            'body' => $body3,
+            'error' => null,
+            'effective_url' => $alt3
+          ];
+        }
+      }
+    }
+  }
+  // If view_archive.php returns 403, try adding access=1 (and on archive.org host when coming from ia host)
+  if ($status === 403 && stripos($url, 'view_archive.php') !== false) {
+    $withAccess = function($u) {
+      $p = @parse_url($u);
+      if (!$p) return null;
+      $q = [];
+      if (!empty($p['query'])) { parse_str($p['query'], $q); }
+      if (!empty($q['access'])) return null;
+      $q['access'] = '1';
+      $rebuilt = ($p['scheme'] ?? 'https') . '://' . ($p['host'] ?? 'archive.org') . ($p['path'] ?? '/view_archive.php');
+      $rebuilt .= '?' . http_build_query($q, '', '&', PHP_QUERY_RFC3986);
+      return $rebuilt;
+    };
+    $cands = [];
+    $c1 = $withAccess($url);
+    if ($c1) $cands[] = $c1;
+    if (preg_match('#^ia\d+\.(?:us\.)?archive\.org$#i', $host)) {
+      $alt = preg_replace('#^https?://[^/]+#i', 'https://archive.org', $url);
+      $c2 = $alt ? $withAccess($alt) : null;
+      if ($c2) $cands[] = $c2;
+    }
+    foreach ($cands as $rebuilt) {
+      $bodyA = @file_get_contents($rebuilt, false, $ctx);
+      $statusA = 0; $isGzipA = false;
+      if (isset($http_response_header) && is_array($http_response_header)) {
+        foreach ($http_response_header as $hline) {
+          if (preg_match('#^HTTP/\S+\s+(\d{3})#', $hline, $m)) { $statusA = (int)$m[1]; }
+          if (stripos($hline, 'Content-Encoding:') === 0 && stripos($hline, 'gzip') !== false) { $isGzipA = true; }
+        }
+      }
+      if ($bodyA !== false && $isGzipA) { $decA = @gzdecode($bodyA); if ($decA !== false) { $bodyA = $decA; } }
+      if ($bodyA !== false && ($statusA >= 200 && $statusA < 300)) {
+        return [
+          'ok' => true,
+          'status' => $statusA,
+          'body' => $bodyA,
+          'error' => null,
+          'effective_url' => $rebuilt
+        ];
+      }
+    }
+  }
+  // Detect Cloudflare challenge in file_get_contents response → retry with system curl.exe
+  if ($body !== '' && (stripos($body, 'Just a moment') !== false || stripos($body, 'cf_chl_opt') !== false || stripos($body, 'challenge-platform') !== false)) {
+    $isWin = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN' || (defined('PHP_OS_FAMILY') && PHP_OS_FAMILY === 'Windows');
+    $curlBin = $isWin ? (is_file('C:\\Windows\\System32\\curl.exe') ? 'C:\\Windows\\System32\\curl.exe' : 'curl.exe') : 'curl';
+    $cmdParts = [$curlBin, '-s', '-L', '--max-time', (string)$timeout, '-H', 'User-Agent: ' . $ua,
+      '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      '-H', 'Accept-Language: en-US,en;q=0.8',
+      '-H', 'Cache-Control: no-cache',
+      '-H', 'Connection: keep-alive',
+      '-H', 'Upgrade-Insecure-Requests: 1'];
+    if (!empty($extraHeaders)) {
+      foreach ($extraHeaders as $eh) { $cmdParts[] = '-H'; $cmdParts[] = $eh; }
+    }
+    $cmdParts[] = $url;
+    $cmd = implode(' ', array_map('escapeshellarg', $cmdParts));
+    $curlBody = @shell_exec($cmd);
+    if ($curlBody !== null && $curlBody !== '' && stripos($curlBody, 'cf_chl_opt') === false && stripos($curlBody, 'Just a moment') === false) {
+      return [
+        'ok' => true,
+        'status' => 200,
+        'body' => $curlBody,
+        'error' => null,
+        'effective_url' => $url
+      ];
+    }
+  }
+  return [
+    'ok' => ($status >= 200 && $status < 300) && $body !== '',
+    'status' => $status,
+    'body' => $body,
+    'error' => $error,
+    'effective_url' => $url
+  ];
+}
+
+// 1fichier: attempt to unlock a password-protected directory by posting the 'pass' field
+function http_fetch_1fichier_with_password(string $url, string $password, int $timeout = 30): array {
+  $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+  $headersBase = [
+    'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language: fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Cache-Control: no-cache',
+    'Connection: keep-alive',
+    'Upgrade-Insecure-Requests: 1'
+  ];
+  if (function_exists('curl_init')) {
+    $cookieFile = tempnam(sys_get_temp_dir(), 'rgsx_cf_');
+    $cleanup = function() use ($cookieFile) { if ($cookieFile && is_file($cookieFile)) { @unlink($cookieFile); } };
+    $mk = function($method, $postFields = null, array $extraCookies = [], bool $verifyPeer = true) use ($url, $timeout, $ua, $headersBase, $cookieFile) {
+      $ch = curl_init($url);
+      $headers = $headersBase;
+      if ($method === 'POST') { $headers[] = 'Content-Type: application/x-www-form-urlencoded'; }
+      if (!empty($extraCookies)) { $headers = merge_cookie_header($headers, $extraCookies); }
+      
+      // Pour le POST, désactiver FOLLOWLOCATION pour voir la redirection
+      $followLocation = ($method !== 'POST');
+      
+      curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => $followLocation,
+        CURLOPT_MAXREDIRS => 5,
+        CURLOPT_CONNECTTIMEOUT => $timeout,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_USERAGENT => $ua,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_ENCODING => '',
+        CURLOPT_COOKIEJAR => $cookieFile,
+        CURLOPT_COOKIEFILE => $cookieFile,
+        CURLOPT_HEADER => true,
+        CURLOPT_SSL_VERIFYPEER => $verifyPeer,
+      ]);
+      if ($method === 'POST') {
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($postFields, '', '&'));
+        curl_setopt($ch, CURLOPT_REFERER, $url);
+      }
+      $resp = curl_exec($ch);
+      $err = $resp === false ? curl_error($ch) : null;
+      $info = curl_getinfo($ch);
+      unset($ch);
+      if ($resp === false) return [false, 0, '', $err, $info, ''];
+      $hsz = (int)($info['header_size'] ?? 0);
+      $headersTxt = $hsz > 0 ? substr($resp, 0, $hsz) : '';
+      $body = $hsz > 0 ? substr($resp, $hsz) : $resp;
+      $code = (int)($info['http_code'] ?? 0);
+      $ok = ($code >= 200 && $code < 300) && $body !== '';
+      return [$ok, $code, $body, $err, $info, $headersTxt];
+    };
+    $request = function($method, $postFields = null, array $extraCookies = []) use ($mk) {
+      [$ok, $code, $body, $err, $info, $headersTxt] = $mk($method, $postFields, $extraCookies, true);
+      if (!$ok && $code === 0 && is_string($err) && stripos($err, 'certificate') !== false) {
+        return $mk($method, $postFields, $extraCookies, false);
+      }
+      return [$ok, $code, $body, $err, $info, $headersTxt];
+    };
+    // Prime cookies with GET
+    [$ok1, $code1, $body1] = $request('GET');
+    $gateCookies = is_1fichier_reload_gate_html($body1) ? extract_script_cookie_values($body1) : [];
+    if (!empty($gateCookies)) {
+      [$ok1b, $code1b, $body1b] = $request('GET', null, $gateCookies);
+      if ($body1b !== '') {
+        $ok1 = $ok1b;
+        $code1 = $code1b;
+        $body1 = $body1b;
+      }
+    }
+    // POST password
+    [$ok2, $code2, $body2, $err2, $info2] = $request('POST', ['pass' => $password], $gateCookies);
+    // Petit délai pour laisser le serveur traiter le cookie
+    usleep(500000); // 0.5 secondes
+    // Then GET listing again (important: after POST, server may set cookie)
+    [$ok3, $code3, $body3, $err3, $info3] = $request('GET', null, $gateCookies);
+    if (is_1fichier_reload_gate_html($body3)) {
+      $postGateCookies = extract_script_cookie_values($body3);
+      if (!empty($postGateCookies)) {
+        $gateCookies = array_merge($gateCookies, $postGateCookies);
+        [$ok3b, $code3b, $body3b, $err3b, $info3b] = $request('GET', null, $gateCookies);
+        if ($body3b !== '') {
+          $ok3 = $ok3b;
+          $code3 = $code3b;
+          $body3 = $body3b;
+          $err3 = $err3b;
+          $info3 = $info3b;
+        }
+      }
+    }
+    $cleanup();
+    
+    // Vérifier si on a toujours le formulaire de mot de passe
+    $hasPasswordForm = stripos($body3, 'protégé par mot de passe') !== false || 
+                       stripos($body3, 'name="pass"') !== false ||
+                       stripos($body3, 'password protected') !== false;
+    
+    $ok = $ok3 || $ok2 || $ok1;
+    $code = $ok3 ? $code3 : ($ok2 ? $code2 : $code1);
+    $body = $ok3 ? $body3 : ($ok2 ? $body2 : $body1);
+    $info = $ok3 ? $info3 : $info2;
+    
+    // Si on a toujours le formulaire, essayer le body du POST directement
+    if ($hasPasswordForm && $ok2 && $body2 !== '') {
+      $hasPasswordForm2 = stripos($body2, 'protégé par mot de passe') !== false || 
+                         stripos($body2, 'name="pass"') !== false;
+      if (!$hasPasswordForm2) {
+        $body = $body2;
+        $code = $code2;
+        $info = $info2;
+      }
+    }
+    
+    return [
+      'ok' => $ok,
+      'status' => $code,
+      'body' => $body,
+      'error' => $ok ? null : ($err3 ?: $err2 ?: 'HTTP ' . $code),
+      'effective_url' => $info['url'] ?? $url,
+      'debug_password_form' => $hasPasswordForm ? 'still present' : 'unlocked'
+    ];
+  }
+  // Fallback without cURL: attempt a POST then use the response body
+  $opts = [
+    'http' => [
+      'method' => 'POST',
+      'header' => implode("\r\n", array_merge($headersBase, ['Content-Type: application/x-www-form-urlencoded'])) . "\r\n",
+      'content' => http_build_query(['pass' => $password], '', '&'),
+      'timeout' => $timeout,
+      'ignore_errors' => true,
+      'user_agent' => $ua,
+    ]
+  ];
+  $ctx = stream_context_create($opts);
+  $body = @file_get_contents($url, false, $ctx);
+  $status = 0; if (isset($http_response_header)) { foreach ($http_response_header as $h) { if (preg_match('#^HTTP/\S+\s+(\d{3})#', $h, $m)) { $status = (int)$m[1]; break; } } }
+  return [
+    'ok' => ($status >= 200 && $status < 300) && $body !== '',
+    'status' => $status,
+    'body' => $body ?: '',
+    'error' => null,
+    'effective_url' => $url
+  ];
+}
+
+function slugify_folder(string $name): string {
+  // Best-effort ASCII transliteration, then slugify to [a-z0-9-]
+  $s = $name;
+  if (function_exists('iconv')) {
+    $conv = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $name);
+    if ($conv !== false) { $s = $conv; }
+  }
+  $s = strtolower($s);
+  $s = preg_replace('/[^a-z0-9]+/', '-', $s);
+  $s = trim($s, '-');
+  return $s !== '' ? $s : 'system';
+}
+
+function build_platform_file_name(string $platformName): string {
+  $platformName = trim($platformName);
+  if ($platformName === '') return '';
+  return preg_match('/\.json$/i', $platformName) ? $platformName : ($platformName . '.json');
+}
+
+function get_row_extension($row): string {
+  $name = strtolower(trim((string)($row[0] ?? '')));
+  if ($name !== '') {
+    $ext = pathinfo($name, PATHINFO_EXTENSION);
+    if (is_string($ext) && $ext !== '') return strtolower($ext);
+  }
+  // For rgsx+torrent:// URLs, extract extension from the 'path' query parameter
+  $url = trim((string)($row[1] ?? ''));
+  if ($url !== '' && stripos($url, 'rgsx+torrent://') === 0) {
+    $qmark = strpos($url, '?');
+    if ($qmark !== false) {
+      parse_str(substr($url, $qmark + 1), $params);
+      $path = trim((string)($params['path'] ?? ''));
+      if ($path !== '') {
+        $basepath = basename($path);
+        $dot = strrpos($basepath, '.');
+        if ($dot !== false && $dot > 0 && $dot < strlen($basepath) - 1) {
+          $ext = strtolower(substr($basepath, $dot + 1));
+          if ($ext !== '') return $ext;
+        }
+      }
+    }
+  }
+  return '';
+}
+
+function filter_scrape_rows_by_extensions(array $rows, ?array $selectedExtensions): array {
+  if ($selectedExtensions === null) {
+    return $rows;
+  }
+  $allowed = [];
+  foreach ($selectedExtensions as $ext) {
+    $ext = strtolower(trim((string)$ext));
+    if ($ext !== '') {
+      $allowed[$ext] = true;
+    }
+  }
+  if (empty($allowed)) {
+    return [];
+  }
+  $filtered = [];
+  foreach ($rows as $row) {
+    $ext = get_row_extension($row);
+    if ($ext !== '' && isset($allowed[$ext])) {
+      $filtered[] = $row;
+    }
+  }
+  return $filtered;
+}
+
+function get_session_images_dir(): string {
+  $base = sys_get_temp_dir();
+  $dir = rtrim($base, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'rgsx_imgs_' . session_id();
+  if (!is_dir($dir)) {
+    @mkdir($dir, 0700, true);
+  }
+  return $dir;
+}
+
+function persist_upload_to_session_dir(string $tmp, string $originalName): ?string {
+  if (!is_readable($tmp)) return null;
+  $destDir = get_session_images_dir();
+  $safeName = preg_replace('/[^\w\-.]+/u', '_', $originalName);
+  $dest = $destDir . DIRECTORY_SEPARATOR . $safeName;
+  // If already exists, add suffix
+  if (file_exists($dest)) {
+    $pi = pathinfo($safeName);
+    $base = $pi['filename'] ?? 'img';
+    $ext = isset($pi['extension']) && $pi['extension'] !== '' ? ('.' . $pi['extension']) : '';
+    $n = 1;
+    do { $dest = $destDir . DIRECTORY_SEPARATOR . $base . '_' . $n . $ext; $n++; } while (file_exists($dest));
+  }
+  // Try move, fallback to copy
+  if (@move_uploaded_file($tmp, $dest) || @rename($tmp, $dest) || @copy($tmp, $dest)) {
+    return $dest;
+  }
+  return null;
+}
+
+function get_session_image_name_map(): array {
+  $names = [];
+  foreach (($_SESSION['images'] ?? []) as $image) {
+    $name = trim((string)($image['name'] ?? ''));
+    if ($name !== '') {
+      $names[$name] = true;
+    }
+  }
+  return $names;
+}
+
+function get_selected_session_image_name(string $fieldName = 'platform_image_existing'): string {
+  $selected = trim((string)($_POST[$fieldName] ?? ''));
+  if ($selected === '') {
+    return '';
+  }
+  $available = get_session_image_name_map();
+  return isset($available[$selected]) ? $selected : '';
+}
+
+function store_uploaded_session_image(string $fieldName = 'platform_image_file'): string {
+  if (!isset($_FILES[$fieldName])) {
+    return '';
+  }
+
+  $upload = $_FILES[$fieldName];
+  $errorCode = (int)($upload['error'] ?? UPLOAD_ERR_NO_FILE);
+  if ($errorCode !== UPLOAD_ERR_OK) {
+    return '';
+  }
+
+  $originalName = (string)($upload['name'] ?? '');
+  $tmpPath = (string)($upload['tmp_name'] ?? '');
+  $mimeType = (string)($upload['type'] ?? '');
+  if ($originalName === '' || $tmpPath === '') {
+    return '';
+  }
+
+  $stored = persist_upload_to_session_dir($tmpPath, $originalName);
+  if (!$stored) {
+    return '';
+  }
+
+  $storedName = basename($stored);
+  $_SESSION['images'][] = ['name' => $storedName, 'tmp' => $stored, 'type' => $mimeType];
+  return $storedName;
+}
+
+function guess_mime_from_ext(string $name): string {
+  $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+  $map = [
+    'png'=>'image/png','jpg'=>'image/jpeg','jpeg'=>'image/jpeg','gif'=>'image/gif','webp'=>'image/webp',
+    'bmp'=>'image/bmp','svg'=>'image/svg+xml'
+  ];
+  return $map[$ext] ?? 'application/octet-stream';
+}
+
+// Group vimm.net results by platform to show consolidated tables
+function group_vimm_results(array $scraped): array {
+  $grouped = [];
+  $vimmGroups = [];
+  
+  foreach ($scraped as $entry) {
+    $label = $entry['label'];
+    $rows = $entry['rows'];
+    
+    // Check if this is a vimm.net URL
+    if (preg_match('#^https?://vimm\.net/vault/([^/]+)/([A-Z])$#i', $label, $matches)) {
+      $platform = $matches[1];
+      $letter = $matches[2];
+      
+      // Group by platform
+      if (!isset($vimmGroups[$platform])) {
+        $vimmGroups[$platform] = [
+          'label' => "vimm.net - $platform (A-Z)",
+          'rows' => []
+        ];
+      }
+      
+      // Add all rows from this letter to the platform group
+      $vimmGroups[$platform]['rows'] = array_merge($vimmGroups[$platform]['rows'], $rows);
+    } else {
+      // Non-vimm results go to regular grouped array
+      $grouped[] = $entry;
+    }
+  }
+  
+  // Add grouped vimm results
+  foreach ($vimmGroups as $platformGroup) {
+    $grouped[] = $platformGroup;
+  }
+  
+  return $grouped;
+}
+
+// Expand vimm.net platform URLs to all letter URLs from A to Z and number section
+function expand_vimm_platform_url(string $url): array {
+  // Check if it's a vimm.net vault platform URL like https://vimm.net/vault/Atari2600
+  if (!preg_match('#^https?://vimm\.net/vault/([^/?]+)$#i', $url, $matches)) {
+    return [$url]; // Not a vimm platform URL, return as is
+  }
+
+  $platform = $matches[1];
+  $baseUrl = "https://vimm.net/vault/$platform";
+
+  // All possible letters from A to Z
+  $letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
+
+  $letterUrls = [];
+  foreach ($letters as $letter) {
+    $letterUrls[] = $baseUrl . '/' . $letter;
+  }
+
+  // Add number section URL
+  $numberUrl = "https://vimm.net/vault/?p=list&system=$platform&section=number";
+  $letterUrls[] = $numberUrl;
+
+  rgsx_debug_log('vimm_platform_expanded', ['platform' => $platform, 'letter_urls_count' => count($letterUrls)]);
+
+  return $letterUrls;
+}
+
+function resolve_url(string $base, string $href): string {
+  $href = trim(html_entity_decode($href, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+  if ($href === '') return '';
+
+  // Keep fully-qualified URLs unchanged.
+  if (preg_match('#^[a-z][a-z0-9+.-]*://#i', $href)) {
+    return normalize_url_like($href);
+  }
+
+  // Protocol-relative URL (e.g. //cdn.example.com/file).
+  if (strpos($href, '//') === 0) {
+    $scheme = parse_url($base, PHP_URL_SCHEME);
+    if (!is_string($scheme) || $scheme === '') { $scheme = 'https'; }
+    return normalize_url_like($scheme . ':' . $href);
+  }
+
+  // Keep non-http URI schemes untouched (magnet:, mailto:, etc.).
+  if (preg_match('#^[a-z][a-z0-9+.-]*:#i', $href)) {
+    return $href;
+  }
+
+  $bp = @parse_url($base);
+  if (!$bp || empty($bp['scheme']) || empty($bp['host'])) {
+    // Best-effort concat
+    if ($href[0] === '/') return $href;
+    return rtrim($base, '/') . '/' . ltrim($href, '/');
+  }
+
+  $scheme = $bp['scheme'];
+  $auth = '';
+  if (isset($bp['user'])) {
+    $auth .= $bp['user'];
+    if (isset($bp['pass'])) { $auth .= ':' . $bp['pass']; }
+    $auth .= '@';
+  }
+  $host = $bp['host'];
+  $port = isset($bp['port']) ? (':' . $bp['port']) : '';
+  $basePath = (string)($bp['path'] ?? '/');
+
+  $query = '';
+  $fragment = '';
+  if ($href[0] === '?') {
+    $path = $basePath;
+    $query = substr($href, 1);
+  } elseif ($href[0] === '#') {
+    $path = $basePath;
+    $query = (string)($bp['query'] ?? '');
+    $fragment = substr($href, 1);
+  } elseif ($href[0] === '/') {
+    $path = $href;
+  } else {
+    // Join with base directory
+    $lastSlash = strrpos($basePath, '/');
+    $dir = $lastSlash !== false ? substr($basePath, 0, $lastSlash + 1) : '/';
+    $path = $dir . $href;
+  }
+
+  // If the relative href embeds query/fragment, split them out before normalizing path segments.
+  if (strpos($path, '#') !== false) {
+    [$path, $inlineFragment] = explode('#', $path, 2);
+    if ($fragment === '') { $fragment = $inlineFragment; }
+  }
+  if (strpos($path, '?') !== false) {
+    [$path, $inlineQuery] = explode('?', $path, 2);
+    if ($query === '') { $query = $inlineQuery; }
+  }
+
+  // Normalize /./ and /../
+  $parts = [];
+  foreach (explode('/', $path) as $seg) {
+    if ($seg === '' || $seg === '.') continue;
+    if ($seg === '..') { array_pop($parts); continue; }
+    $parts[] = $seg;
+  }
+  $pathNorm = '/' . implode('/', $parts);
+
+  $rebuilt = $scheme . '://' . $auth . $host . $port . $pathNorm;
+  if ($query !== '') { $rebuilt .= '?' . $query; }
+  if ($fragment !== '') { $rebuilt .= '#' . $fragment; }
+
+  return normalize_url_like($rebuilt);
+}
+
+// HTTP range fetch (binary-safe), returns [ok,status,body,error,headers]
+function http_fetch_range(string $url, string $rangeSpec, int $timeout = 30, array $extraHeaders = []): array {
+  $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+  $isArchive = stripos((parse_url($url, PHP_URL_HOST) ?: ''), 'archive.org') !== false;
+  if (function_exists('curl_init')) {
+    $ch = curl_init($url);
+    $headers = [
+      'Accept: */*',
+      'Cache-Control: no-cache',
+      'Connection: keep-alive',
+      'Range: bytes=' . $rangeSpec,
+    ];
+    if ($isArchive) { $headers[] = 'Referer: https://archive.org/'; $headers[] = 'Origin: https://archive.org'; }
+    if (!empty($extraHeaders)) { $headers = array_merge($headers, $extraHeaders); }
+    curl_setopt_array($ch, [
+      CURLOPT_RETURNTRANSFER => true,
+      CURLOPT_FOLLOWLOCATION => true,
+      CURLOPT_MAXREDIRS => 5,
+      CURLOPT_CONNECTTIMEOUT => $timeout,
+      CURLOPT_TIMEOUT => $timeout,
+      CURLOPT_USERAGENT => $ua,
+      CURLOPT_HTTPHEADER => $headers,
+      CURLOPT_HEADER => true,
+    ]);
+    $resp = curl_exec($ch);
+    $err = $resp === false ? curl_error($ch) : null;
+    $info = curl_getinfo($ch);
+    unset($ch);
+    if ($resp === false) return ['ok'=>false,'status'=>0,'body'=>'','error'=>$err,'headers'=>[]];
+    $hsz = (int)($info['header_size'] ?? 0);
+    $headersTxt = $hsz > 0 ? substr($resp, 0, $hsz) : '';
+    $body = $hsz > 0 ? substr($resp, $hsz) : $resp;
+    $code = (int)($info['http_code'] ?? 0);
+    return ['ok'=>($code>=200&&$code<300)&&$body!=='','status'=>$code,'body'=>$body,'error'=>null,'headers'=>explode("\r\n", trim($headersTxt))];
+  }
+  $hdr = "Range: bytes=$rangeSpec\r\nAccept: */*\r\n";
+  if ($isArchive) { $hdr .= "Referer: https://archive.org/\r\nOrigin: https://archive.org/\r\n"; }
+  if (!empty($extraHeaders)) { $hdr .= implode("\r\n", $extraHeaders) . "\r\n"; }
+  $ctx = stream_context_create(['http' => [
+    'timeout' => $timeout,
+    'user_agent' => $ua,
+    'header' => $hdr,
+    'ignore_errors' => true
+  ]]);
+  $body = @file_get_contents($url, false, $ctx);
+  $status = 0; $headers = isset($http_response_header) ? $http_response_header : [];
+  foreach ($headers as $hline) { if (preg_match('#^HTTP/\S+\s+(\d{3})#', $hline, $m)) { $status = (int)$m[1]; break; } }
+  return ['ok'=>($status>=200&&$status<300)&&$body!=='','status'=>$status,'body'=>$body?:'','error'=>null,'headers'=>$headers];
+}
+
+function archiveorg_zip_url_from_view_archive(string $viewUrl): ?array {
+  $q = parse_url($viewUrl, PHP_URL_QUERY);
+  if (!is_string($q)) return null;
+  parse_str($q, $qarr);
+  if (empty($qarr['archive'])) return null;
+  // archive param is like /26/items/ITEM/path/to/file.zip
+  $archivePath = $qarr['archive'];
+  if ($archivePath[0] !== '/') $archivePath = '/' . $archivePath;
+  // Derive item id
+  if (!preg_match('#^/(?:\d+|download)/items/([^/]+)/(.+)$#', $archivePath, $m)) return null;
+  $item = $m[1];
+  $rel = $m[2];
+  $downloadUrl = 'https://archive.org/download/' . rawurlencode($item) . '/' . str_replace('%2F','/', rawurlencode($rel));
+  return ['item'=>$item, 'rel'=>$rel, 'download'=>$downloadUrl, 'archiveParam'=>$archivePath];
+}
+
+function list_zip_entries_via_http_range(string $zipUrl, int $timeout = 30, array $extraHeaders = []): array {
+  // Fetch last 256KB to find EOCD
+  $tail = http_fetch_range($zipUrl, '-262144', $timeout, $extraHeaders);
+  if (!$tail['ok'] || $tail['body'] === '') return [];
+  $headers = $tail['headers'];
+  $contentRange = '';
+  foreach ($headers as $h) { if (stripos($h, 'Content-Range:') === 0) { $contentRange = trim(substr($h, strpos($h, ':')+1)); break; } }
+  $totalLen = null; $rangeStart = null;
+  if ($contentRange && preg_match('#bytes\s+(\d+)-(\d+)/(\d+)#i', $contentRange, $m)) {
+    $rangeStart = (int)$m[1]; $totalLen = (int)$m[3];
+  }
+  $data = $tail['body'];
+  $eocdSig = "\x50\x4b\x05\x06";
+  $pos = strrpos($data, $eocdSig);
+  if ($pos === false) return [];
+  $eocd = substr($data, $pos);
+  // Need at least 22 bytes minimal EOCD
+  if (strlen($eocd) < 22) return [];
+  $u = unpack('vdisk/vcdDisk/ventriesDisk/ventriesTotal/VcdSize/VcdOffset/vcomLen', substr($eocd, 4, 18));
+  if (!$u) return [];
+  $cdSize = $u['cdSize']; $cdOffset = $u['cdOffset']; $comLen = $u['comLen'];
+  // Compute absolute byte offset of central directory
+  if ($totalLen === null || $rangeStart === null) return [];
+  $eocdAbsolute = $rangeStart + $pos;
+  // EOCD ends at eocdAbsolute + (len EOCD header inc 22 + comment)
+  $cdAbsolute = $cdOffset; // per spec, absolute from file start
+  // Fetch the central directory region
+  $cdEnd = $cdAbsolute + $cdSize - 1;
+  $cdResp = http_fetch_range($zipUrl, $cdAbsolute . '-' . $cdEnd, $timeout, $extraHeaders);
+  if (!$cdResp['ok']) return [];
+  $cd = $cdResp['body'];
+  $entries = [];
+  $i = 0; $cdLen = strlen($cd);
+  while ($i + 46 <= $cdLen) {
+    if (substr($cd, $i, 4) !== "\x50\x4b\x01\x02") { $i++; continue; }
+    $hdr = substr($cd, $i, 46);
+    $h = unpack('vverMade/vverNeed/vgp/vcomp/vtime/vdate/Vcrc/Vcsize/Vusize/vnlen/veLen/vcLen/vdisk/vint/Vext/Vrel', substr($hdr, 4));
+    if (!$h) break;
+    $nlen = $h['nlen']; $eLen = $h['eLen']; $cLen = $h['cLen'];
+    $name = substr($cd, $i + 46, $nlen);
+    $i += 46 + $nlen + $eLen + $cLen;
+    if ($name === '' || substr($name, -1) === '/') continue; // skip folders
+    $entries[] = [
+      'name' => $name,
+      'usize' => (int)$h['usize'],
+      'csize' => (int)$h['csize']
+    ];
+  }
+  return $entries;
+}
+
+// Serve uploaded image preview from session by name
+if (isset($_GET['preview_image'])) {
+  $req = (string)$_GET['preview_image'];
+  $name = basename($req); // basic sanitization
+  $images = $_SESSION['images'] ?? [];
+  foreach ($images as $im) {
+    if (isset($im['name']) && $im['name'] === $name && !empty($im['tmp']) && is_readable($im['tmp'])) {
+      $type = $im['type'] ?? null;
+      if (!$type) {
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $map = ['png'=>'image/png','jpg'=>'image/jpeg','jpeg'=>'image/jpeg','gif'=>'image/gif','webp'=>'image/webp'];
+        $type = $map[$ext] ?? 'application/octet-stream';
+      }
+      $path = $im['tmp'];
+      $mtime = @filemtime($path) ?: time();
+      $size  = @filesize($path) ?: 0;
+      $etag  = 'W/"' . md5($name.'|'.$mtime.'|'.$size) . '"';
+      // Conditional
+      if ((isset($_SERVER['HTTP_IF_NONE_MATCH']) && trim($_SERVER['HTTP_IF_NONE_MATCH']) === $etag) ||
+          (isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) && strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']) >= $mtime)) {
+        header('HTTP/1.1 304 Not Modified');
+        header('ETag: ' . $etag);
+        header('Cache-Control: public, max-age=604800, immutable');
+        exit;
+      }
+      header('Content-Type: ' . $type);
+      header('Content-Length: ' . $size);
+      header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $mtime) . ' GMT');
+      header('ETag: ' . $etag);
+      header('Cache-Control: public, max-age=604800, immutable');
+      readfile($path);
+      exit;
+    }
+  }
+  http_response_code(404);
+  header('Content-Type: text/plain; charset=UTF-8');
+  echo 'Not found';
+  exit;
+}
+
+// Serve uploaded torrent file from session by name
+if (isset($_GET['serve_torrent'])) {
+  $req = (string)$_GET['serve_torrent'];
+  $name = basename($req); // basic sanitization
+  $torrents = $_SESSION['torrents'] ?? [];
+  foreach ($torrents as $t) {
+    if (isset($t['name']) && $t['name'] === $name && !empty($t['tmp']) && is_readable($t['tmp'])) {
+      $path = $t['tmp'];
+      $size  = @filesize($path) ?: 0;
+      $mtime = @filemtime($path) ?: time();
+      $etag  = 'W/"' . md5($name.'|'.$mtime.'|'.$size) . '"';
+      if ((isset($_SERVER['HTTP_IF_NONE_MATCH']) && trim($_SERVER['HTTP_IF_NONE_MATCH']) === $etag) ||
+          (isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) && strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']) >= $mtime)) {
+        header('HTTP/1.1 304 Not Modified');
+        header('ETag: ' . $etag);
+        exit;
+      }
+      header('Content-Type: application/x-bittorrent');
+      header('Content-Disposition: inline; filename="' . $name . '"');
+      header('Content-Length: ' . $size);
+      header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $mtime) . ' GMT');
+      header('ETag: ' . $etag);
+      header('Cache-Control: no-store');
+      readfile($path);
+      exit;
+    }
+  }
+  http_response_code(404);
+  header('Content-Type: text/plain; charset=UTF-8');
+  echo 'Not found';
+  exit;
+}
+
+if (isset($_GET['zip_progress'])) {
+  header('Content-Type: application/json; charset=utf-8');
+  $progressKey = trim((string)($_GET['progress_key'] ?? ''));
+  echo json_encode(rgsx_zip_progress_read($progressKey !== '' ? $progressKey : null), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+  exit;
+}
+
+// Render a single platform games table (deferred load to keep initial DOM light)
+if (isset($_GET['render_games_table'])) {
+  header('Content-Type: text/html; charset=UTF-8');
+  $file = (string)($_GET['file'] ?? '');
+  $file = trim($file);
+  $page = max(1, (int)($_GET['page'] ?? 1));
+  $perPage = 100;
+  $rows = $_SESSION['platform_games'][$file] ?? null;
+  if ($rows === null || !is_array($rows)) {
+    http_response_code(404);
+    // Debug temporaire
+    $availableFiles = array_keys($_SESSION['platform_games'] ?? []);
+    echo '<div class="text-muted">Aucune donnée pour ' . htmlspecialchars($file, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8') . '<br>';
+    echo 'Fichiers disponibles: ' . implode(', ', $availableFiles) . '</div>';
+    exit;
+  }
+  $total = count($rows);
+  $pages = max(1, (int)ceil($total / $perPage));
+  $page = max(1, min($page, $pages));
+  $offset = ($page - 1) * $perPage;
+  $paginated = array_slice($rows, $offset, $perPage);
+  
+  // Pagination controls
+  if ($pages > 1) {
+    echo '<div class="mb-2 d-flex justify-content-between align-items-center">';
+  echo '<small class="text-muted">' . sprintf(t('table.systems.summary','Lignes %d-%d sur %d'), ($offset + 1), min($offset + $perPage, $total), $total) . '</small>';
+    echo '<div class="btn-group btn-group-sm" role="group">';
+    if ($page > 1) {
+      echo '<button class="btn btn-outline-secondary" onclick="loadGamesPage(\'' . htmlspecialchars($file, ENT_QUOTES) . '\', ' . ($page-1) . ', this)">« Préc</button>';
+    } else {
+      echo '<button class="btn btn-outline-secondary disabled">« Préc</button>';
+    }
+    echo '<span class="btn btn-secondary disabled">Page ' . $page . '/' . $pages . '</span>';
+    if ($page < $pages) {
+      echo '<button class="btn btn-outline-secondary" onclick="loadGamesPage(\'' . htmlspecialchars($file, ENT_QUOTES) . '\', ' . ($page+1) . ', this)">Suiv »</button>';
+    } else {
+      echo '<button class="btn btn-outline-secondary disabled">Suiv »</button>';
+    }
+    echo '</div></div>';
+  }
+  
+  echo '<div class="table-responsive">';
+  echo '<table class="table table-sm table-striped align-middle" style="table-layout:fixed; width:100%;">';
+  // Définir des largeurs fixes pour éviter le débordement horizontal
+    echo '<colgroup>'
+    . '<col style="width:55px;">'
+    . '<col style="width:20%;">'
+    . '<col style="width:49%;">'
+    . '<col style="width:90px;">'
+    . '<col style="width:150px;">'
+    . '</colgroup>';
+  echo '<thead><tr><th>#</th><th>' . t('label.game_name','Nom') . '</th><th>' . t('label.url','URL') . '</th><th>' . t('label.size','Taille') . '</th><th></th></tr></thead><tbody>';
+  foreach ($paginated as $i => $r) {
+    $idx = $offset + $i;
+    $name = htmlspecialchars((string)($r[0] ?? ''), ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8');
+    // URL avec troncature au milieu (préserver début et fin pour différencier les longues URL identiques en prefixe)
+    $rawUrl = (string)($r[1] ?? '');
+    $size = htmlspecialchars((string)($r[2] ?? ''), ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8');
+    $displayUrl = $rawUrl;
+    $maxLen = 70;        // longueur totale déclenchant la troncature
+    $keepStart = 35;     // caractères au début conservés
+    $keepEnd = 25;       // caractères à la fin conservés
+    if (strlen($rawUrl) > $maxLen && ($keepStart + $keepEnd + 1) < strlen($rawUrl)) {
+      $displayUrl = substr($rawUrl, 0, $keepStart) . '…' . substr($rawUrl, -$keepEnd);
+    }
+    $urlFullEsc = htmlspecialchars($rawUrl, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8');
+    $urlDisplayEsc = htmlspecialchars($displayUrl, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8');
+    echo '<tr>';
+    echo '<td>' . ($idx+1) . '</td>';
+  // Nom tronqué si trop long
+  echo '<td class="text-nowrap games-name" style="overflow:hidden; text-overflow:ellipsis; max-width:100%;" title="' . $name . '">' . $name . '</td>';
+  // Cellule URL tronquée avec ellipsis + title pour affichage complet au survol
+  echo '<td class="games-url" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%;" title="' . $urlFullEsc . '">' . $urlDisplayEsc . '</td>';
+    echo '<td class="text-nowrap">' . $size . '</td>';
+    echo '<td class="text-nowrap">';
+    echo '<div class="d-flex flex-nowrap gap-1">';
+      // Bouton Modifier
+  echo '<button type="button" class="btn btn-sm btn-outline-primary" onclick="toggleGameEditRow(' . $idx . ')">' . t('btn.modify','Modifier') . '</button>';
+      echo '<form method="post" class="m-0">';
+      echo '<input type="hidden" name="action" value="games_delete_row">';
+      echo '<input type="hidden" name="active_tab" value="tab-systems">';
+      echo '<input type="hidden" name="games_file" value="' . htmlspecialchars($file, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8') . '">';
+      echo '<input type="hidden" name="row_index" value="' . $idx . '">';
+  echo '<button class="btn btn-sm btn-outline-danger" onclick="return confirm(\'' . addslashes(t('confirm.delete_row','Supprimer cette ligne ?')) . '\');">' . t('btn.delete','Supprimer') . '</button>';
+      echo '</form>';
+    echo '</div>';
+    echo '</td>';
+    echo '</tr>';
+    // Ligne édition masquée
+    echo '<tr id="game-edit-row-' . $idx . '" class="d-none">';
+    echo '<td colspan="5">';
+    echo '<form method="post" class="row g-2 align-items-end">';
+    echo '<input type="hidden" name="action" value="games_update_row">';
+    echo '<input type="hidden" name="active_tab" value="tab-systems">';
+    echo '<input type="hidden" name="games_file" value="' . htmlspecialchars($file, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8') . '">';
+    echo '<input type="hidden" name="row_index" value="' . $idx . '">';
+  echo '<div class="col-md-4"><label class="form-label">' . t('label.game_name','Nom/Archive') . '</label><input class="form-control form-control-sm" name="game_name" value="' . $name . '"></div>';
+  echo '<div class="col-md-6"><label class="form-label">' . t('label.url','URL') . '</label><input class="form-control form-control-sm" name="game_url" value="' . $urlFullEsc . '"></div>';
+  echo '<div class="col-md-2"><label class="form-label">' . t('label.size','Taille') . '</label><input class="form-control form-control-sm" name="game_size" value="' . $size . '"></div>';
+  echo '<div class="col-12 text-end"><button class="btn btn-sm btn-primary">' . t('btn.save','Enregistrer') . '</button> <button type="button" class="btn btn-sm btn-secondary" onclick="toggleGameEditRow(' . $idx . ')">' . t('btn.cancel','Annuler') . '</button></div>';
+    echo '</form>';
+    echo '</td>';
+    echo '</tr>';
+  }
+  echo '</tbody></table></div>';
+  exit;
+}
+
+// -------------- Scraper (copied behavior) ----------
+function parse_1fichier_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  $rows = $dom->getElementsByTagName('tr');
+  $result = [];
+  foreach ($rows as $tr) {
+    $tds = $tr->getElementsByTagName('td');
+    if ($tds->length < 2) continue;
+    $td0 = $tds->item(0);
+    if (!$td0) continue;
+    $cls = (string)$td0->getAttribute('class');
+    if (stripos($cls, 'file-obj') === false) continue; // specific to provided markup
+    $a = $td0->getElementsByTagName('a')->item(0);
+    if (!$a) continue;
+    $fileName = trim($a->textContent);
+    if ($fileName === '' || substr($fileName, -1) === '/') continue;
+    $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+    if (!in_array($ext, $validExtensions)) continue;
+    $href = $a->getAttribute('href');
+    $fullUrl = $isUrl ? resolve_url($urlOrFragment, $href) : $href;
+    // size in next td
+    $sizeTd = $tds->item(1);
+    $fileSize = '';
+    if ($sizeTd) {
+      $txt = trim($sizeTd->textContent);
+      if ($txt !== '') { $fileSize = $txt; }
+    }
+    $result[] = [$fileName, $fullUrl, $fileSize];
+  }
+  if ($result) return $result;
+  
+  // Nouvelle approche : chercher des liens avec data-href ou href contenant 1fichier.com
+  $links = $dom->getElementsByTagName('a');
+  foreach ($links as $a) {
+    $href = $a->getAttribute('href');
+    $dataHref = $a->getAttribute('data-href');
+    $actualHref = $dataHref ?: $href;
+    if ($actualHref === '') continue;
+    
+    $fileName = trim($a->textContent);
+    if ($fileName === '' || substr($fileName, -1) === '/') continue;
+    $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+    if (!in_array($ext, $validExtensions)) continue;
+    
+    $fullUrl = $isUrl ? resolve_url($urlOrFragment, $actualHref) : $actualHref;
+    
+    // Chercher la taille dans les éléments siblings ou parent
+    $size = '';
+    $parent = $a->parentNode;
+    if ($parent) {
+      $nextSib = $parent->nextSibling;
+      while ($nextSib) {
+        if ($nextSib->nodeType === XML_ELEMENT_NODE) {
+          $txt = trim($nextSib->textContent);
+          if (preg_match('/\b\d+(?:[.,]\d+)?\s*[KMGTP]?[Bo]\b/i', $txt)) {
+            $size = $txt;
+            break;
+          }
+        }
+        $nextSib = $nextSib->nextSibling;
+      }
+    }
+    
+    $result[] = [$fileName, $fullUrl, $size];
+  }
+  if ($result) return $result;
+  
+  // Fallback to heuristics if structure differs
+  $rows = $dom->getElementsByTagName('tr');
+  foreach ($rows as $tr) {
+    $tds = $tr->getElementsByTagName('td');
+    if ($tds->length === 0) continue;
+    $a = null;
+    foreach ($tds as $td) { $a = $td->getElementsByTagName('a')->item(0); if ($a) break; }
+    if (!$a) continue;
+    $name = trim($a->textContent);
+    if ($name === '' || substr($name, -1) === '/') continue;
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    if (!in_array($ext, $validExtensions)) continue;
+    $href = $a->getAttribute('href');
+    $full = $isUrl ? resolve_url($urlOrFragment, $href) : $href;
+    $size = '';
+    foreach ($tds as $i => $td) {
+      $txt = trim($td->textContent);
+      if ($txt === '' || $i === 0) continue;
+      if (preg_match('/\b\d+(?:[.,]\d+)?\s*[KMGTP]?B\b/i', $txt) || preg_match('/\b\d+(?:[.,]\d+)?\s*[KMGTP]o\b/i', $txt)) { $size = $txt; break; }
+    }
+    $result[] = [$name, $full, $size];
+  }
+  return $result;
+}
+function parse_classic_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+    $links = $dom->getElementsByTagName('tr');
+    $result = [];
+    foreach ($links as $link) {
+        $tdLink = $link->getElementsByTagName('td')->item(0);
+        $tdSize = $link->getElementsByTagName('td')->item(1);
+        if ($tdLink && $tdLink->getAttribute('class') === 'link') {
+            $a = $tdLink->getElementsByTagName('a')->item(0);
+            if ($a) {
+                $fileName = $a->textContent;
+                $href = $a->getAttribute('href');
+                $fileSize = $tdSize ? trim($tdSize->textContent) : '';
+                if ($fileName === "Parent directory/") continue;
+                $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+                if (in_array($extension, $validExtensions)) {
+                  $fullUrl = $isUrl ? resolve_url($urlOrFragment, $href) : $href;
+                    $result[] = [$fileName, $fullUrl, $fileSize];
+                }
+            }
+        }
+    }
+    return $result;
+}
+function parse_lolroms($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  $result = [];
+  $lis = $dom->getElementsByTagName('li');
+  foreach ($lis as $li) {
+    $cls = (string)$li->getAttribute('class');
+    if (stripos($cls, 'file-item') === false) continue;
+    $a = $li->getElementsByTagName('a')->item(0);
+    if (!$a) continue;
+    $href = $a->getAttribute('href');
+    if ($href === '') continue;
+    // Extract filename from href (URL decoded basename preserves proper casing)
+    $path = parse_url($href, PHP_URL_PATH);
+    $fileName = $path ? urldecode(basename($path)) : trim($a->textContent);
+    if ($fileName === '' || substr($fileName, -1) === '/') continue;
+    $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+    if (!in_array($ext, $validExtensions)) continue;
+    if ($isUrl) {
+      $fullUrl = resolve_url($urlOrFragment, $href);
+    } elseif (preg_match('#^/#', $href)) {
+      // Pasted HTML: resolve relative paths against lolroms.com
+      $fullUrl = 'https://lolroms.com' . $href;
+    } else {
+      $fullUrl = $href;
+    }
+    // Extract file size from span.file-size
+    $fileSize = '';
+    $spans = $li->getElementsByTagName('span');
+    foreach ($spans as $span) {
+      if (stripos((string)$span->getAttribute('class'), 'file-size') !== false) {
+        $fileSize = trim($span->textContent);
+        break;
+      }
+    }
+    $result[] = [$fileName, $fullUrl, $fileSize];
+  }
+  return $result;
+}
+function parse_vimm_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  $result = [];
+
+  // IDs vimm.net à ignorer systématiquement (liens parasites/placeholders qui
+  // apparaissent sur plusieurs pages lettre, causant des doublons lors du scrape).
+  $ignoredVimmIds = ['999999'];
+
+  // Check if this is an individual game page (URL ends with a number)
+  if (preg_match('#^https?://vimm\.net/vault/(\d+)$#i', $urlOrFragment, $matches)) {
+    // Individual game page - extract title and download URL
+    $gameId = $matches[1];
+
+    if (in_array($gameId, $ignoredVimmIds, true)) {
+      rgsx_debug_log('vimm_ignored_id', ['gameId' => $gameId, 'url' => $urlOrFragment]);
+      return $result;
+    }
+    
+    // Try to find the title in the page
+    $title = '';
+    $h1s = $dom->getElementsByTagName('h1');
+    if ($h1s->length > 0) {
+      $title = trim($h1s->item(0)->textContent);
+    }
+    
+    // If no h1, try title tag
+    if ($title === '') {
+      $titles = $dom->getElementsByTagName('title');
+      if ($titles->length > 0) {
+        $title = trim($titles->item(0)->textContent);
+        // Remove "The Vault: " prefix if present
+        $title = preg_replace('/^The Vault:\s*/i', '', $title);
+      }
+    }
+    
+    if ($title !== '') {
+      // Sanitize filename
+      $fileName = preg_replace('/[^A-Za-z0-9\-_\.]/', '_', $title) . '.zip';
+      // The download URL is the same as the current URL
+      $result[] = [$fileName, $urlOrFragment, ''];
+    }
+    
+    return $result;
+  }
+  
+  // Letter page or number page - find all links to /vault/XXXXX (game pages)
+  foreach ($dom->getElementsByTagName('a') as $a) {
+    $href = $a->getAttribute('href');
+    if (preg_match('#^/vault/(\d+)$#', $href, $matches)) {
+      $gameId = $matches[1];
+      if (in_array($gameId, $ignoredVimmIds, true)) {
+        continue;
+      }
+      $gameTitle = trim($a->textContent);
+      if ($gameTitle === '') continue;
+      
+      // Create a filename from the title (sanitize it)
+      $fileName = preg_replace('/[^A-Za-z0-9\-_\.]/', '_', $gameTitle) . '.zip';
+      $fullUrl = 'https://vimm.net' . $href;
+      
+      // For vimm.net, we don't have file size, so leave it empty
+      $result[] = [$fileName, $fullUrl, ''];
+    }
+  }
+  return $result;
+}
+function parse_edgeemu_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  $result = [];
+  
+  // Check if this is a platform browse page (e.g., /browse/watara-supervision)
+  if (preg_match('#^https?://edgeemu\.net/browse/([^/]+)$#i', $urlOrFragment, $matches)) {
+    $platform = strtolower($matches[1]);
+
+    // Keep results unique across all sub-pages.
+    $seen = [];
+    $seedRows = parse_edgeemu_net_letter_page($dom, $sourceLabel, $urlOrFragment, $validExtensions);
+    foreach ($seedRows as $row) {
+      $key = strtolower(($row[0] ?? '') . '|' . ($row[1] ?? ''));
+      if (isset($seen[$key])) continue;
+      $seen[$key] = true;
+      $result[] = $row;
+    }
+
+    // Prefer letter URLs that are actually present on the platform page.
+    $letterUrls = [];
+    foreach ($dom->getElementsByTagName('a') as $a) {
+      $href = trim((string)$a->getAttribute('href'));
+      if ($href === '') continue;
+
+      if (preg_match('#^/browse/' . preg_quote($platform, '#') . '/([a-z0-9])$#i', $href, $m)) {
+        $letterUrls[] = 'https://edgeemu.net/browse/' . $platform . '/' . strtolower($m[1]);
+        continue;
+      }
+      if (preg_match('#^https?://edgeemu\.net/browse/' . preg_quote($platform, '#') . '/([a-z0-9])$#i', $href, $m)) {
+        $letterUrls[] = 'https://edgeemu.net/browse/' . $platform . '/' . strtolower($m[1]);
+      }
+    }
+    foreach ($dom->getElementsByTagName('option') as $opt) {
+      $val = trim((string)$opt->getAttribute('value'));
+      if ($val === '') continue;
+      if (preg_match('#^/browse/' . preg_quote($platform, '#') . '/([a-z0-9])$#i', $val, $m)) {
+        $letterUrls[] = 'https://edgeemu.net/browse/' . $platform . '/' . strtolower($m[1]);
+        continue;
+      }
+      if (preg_match('#^https?://edgeemu\\.net/browse/' . preg_quote($platform, '#') . '/([a-z0-9])$#i', $val, $m)) {
+        $letterUrls[] = 'https://edgeemu.net/browse/' . $platform . '/' . strtolower($m[1]);
+      }
+    }
+    $letterUrls = array_values(array_unique($letterUrls));
+
+    // Fallback when the page doesn't expose the letter links in HTML.
+    if (empty($letterUrls)) {
+      foreach (array_merge(range('a', 'z'), ['1']) as $char) {
+        $letterUrls[] = 'https://edgeemu.net/browse/' . $platform . '/' . $char;
+      }
+    }
+
+    // Hard bounds prevent endless loading in case of slow/unresponsive upstream.
+    $startedAt = microtime(true);
+    $maxTotalSeconds = 15.0;
+    $maxPages = 27;
+    $processed = 0;
+    $noNewStreak = 0;
+
+    foreach ($letterUrls as $letterUrl) {
+      if ($processed >= $maxPages) break;
+      if ((microtime(true) - $startedAt) >= $maxTotalSeconds) break;
+
+      $beforeCount = count($result);
+      $fetch = http_fetch($letterUrl, 3);
+      if (empty($fetch['ok']) || empty($fetch['body'])) {
+        $processed++;
+        $noNewStreak++;
+        if ($noNewStreak >= 6 && $processed >= 6) break;
+        continue;
+      }
+
+      $letterDom = new DOMDocument();
+      libxml_use_internal_errors(true);
+      @$letterDom->loadHTML($fetch['body']);
+
+      $letterResult = parse_edgeemu_net_letter_page($letterDom, $sourceLabel, $letterUrl, $validExtensions);
+      foreach ($letterResult as $row) {
+        $key = strtolower(($row[0] ?? '') . '|' . ($row[1] ?? ''));
+        if (isset($seen[$key])) continue;
+        $seen[$key] = true;
+        $result[] = $row;
+      }
+      if (count($result) > $beforeCount) {
+        $noNewStreak = 0;
+      } else {
+        $noNewStreak++;
+      }
+      $processed++;
+      if ($noNewStreak >= 6 && $processed >= 6) break;
+    }
+    return $result;
+  }
+  
+  // Check if this is a letter page (e.g., /browse/watara-supervision/a)
+  if (preg_match('#^https?://edgeemu\.net/browse/([^/]+)/[a-z0-9]$#i', $urlOrFragment)) {
+    return parse_edgeemu_net_letter_page($dom, $sourceLabel, $urlOrFragment, $validExtensions);
+  }
+  
+  return $result;
+}
+
+function parse_edgeemu_net_letter_page($dom, $sourceLabel, $urlOrFragment, $validExtensions) {
+  $result = [];
+  
+  // Parse the grid of games
+  $items = $dom->getElementsByTagName('div');
+  foreach ($items as $item) {
+    $class = $item->getAttribute('class');
+    if (strpos($class, 'item') === false) continue;
+    
+    $details = $item->getElementsByTagName('details')->item(0);
+    if (!$details) continue;
+    
+    $dataName = $details->getAttribute('data-name');
+    if (!$dataName) continue;
+    
+    $summary = $details->getElementsByTagName('summary')->item(0);
+    if (!$summary) continue;
+    $title = trim($summary->textContent);
+    
+    // Find the download link
+    $downloadLink = null;
+    $size = '';
+    $ps = $details->getElementsByTagName('p');
+    foreach ($ps as $p) {
+      $a = $p->getElementsByTagName('a')->item(0);
+      if ($a && trim($a->textContent) === 'download') {
+        $href = $a->getAttribute('href');
+        if ($href) {
+          $downloadLink = 'https://edgeemu.net' . $href;
+          // Extract size from the span in the same p
+          $spans = $p->getElementsByTagName('span');
+          foreach ($spans as $span) {
+            $spanText = trim($span->textContent);
+            // Split on comma and take only the first part (size), ignore download count
+            $sizeParts = explode(',', $spanText);
+            $rawSize = trim($sizeParts[0]);
+            if (preg_match('/\d+(?:\.\d+)?\s*[kmgtp]?b?/i', $rawSize)) {
+              // Normalize the size using the existing format_bytes function
+              $sizeBytes = parse_file_size_to_bytes($rawSize);
+              $size = format_bytes($sizeBytes);
+              break;
+            }
+          }
+          break;
+        }
+      }
+    }
+    
+    if ($downloadLink && $title) {
+      $result[] = [$dataName, $downloadLink, $size];
+    }
+  }
+  return $result;
+}
+
+function parse_retrogamesets_torrents($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  if (!$isUrl) {
+    return [];
+  }
+
+  $host = strtolower((string)parse_url($urlOrFragment, PHP_URL_HOST));
+  $path = (string)parse_url($urlOrFragment, PHP_URL_PATH);
+  if (($host !== 'retrogamesets.fr' && $host !== 'www.retrogamesets.fr') || stripos($path, '/thomsonito_torrents') !== 0) {
+    return [];
+  }
+
+  // The page uses <a class="companion-badge torrent-badge" href="Game.torrent">
+  // Collect all torrent-badge links; the post-processing expansion step will
+  // download + parse each .torrent and replace it with rgsx+torrent:// rows.
+  $rows = [];
+  foreach ($dom->getElementsByTagName('a') as $a) {
+    $class = strtolower((string)$a->getAttribute('class'));
+    if (strpos($class, 'torrent-badge') === false) {
+      continue;
+    }
+
+    $href = trim((string)$a->getAttribute('href'));
+    if ($href === '' || !preg_match('/\.torrent(\?.*)?$/i', $href)) {
+      continue;
+    }
+
+    $absUrl = resolve_url($urlOrFragment, $href);
+    $filename = urldecode(basename((string)parse_url($absUrl, PHP_URL_PATH)));
+    if ($filename === '') {
+      continue;
+    }
+
+    $rows[] = [$filename, $absUrl, ''];
+  }
+
+  return $rows;
+}
+
+function parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  $out = [];
+  foreach ($dom->getElementsByTagName('a') as $a) {
+    $text = trim($a->textContent);
+    $href = $a->getAttribute('href');
+    if ($href === '') continue;
+    if ($text !== '' && stripos($text, 'Parent directory') !== false) continue;
+    // Determine candidate filename: prefer link text when it contains an extension, otherwise use href basename
+    $name = $text;
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    if ($ext === '' || !in_array($ext, $validExtensions)) {
+      $path = parse_url($href, PHP_URL_PATH);
+      $base = $path ? basename($path) : '';
+      if ($base !== '') {
+        $base = urldecode($base);
+        $ext2 = strtolower(pathinfo($base, PATHINFO_EXTENSION));
+        if (in_array($ext2, $validExtensions)) { $name = $base; $ext = $ext2; }
+      }
+    }
+    if ($ext === '' || !in_array($ext, $validExtensions)) continue;
+    if ($name === '' || substr($name, -1) === '/') continue; // skip directories
+    $full = $isUrl ? resolve_url($urlOrFragment, $href) : $href;
+    $out[] = [$name, $full, ''];
+  }
+  return $out;
+}
+function parse_archiveorg_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+    global $__parse_debug__;
+    
+    // Archive.org wraps directory listings in <pre><table>...
+    // DOMDocument treats <pre> content as text, so we need to extract and re-parse
+    $pres = $dom->getElementsByTagName('pre');
+    $foundTableInPre = false;
+    foreach ($pres as $pre) {
+        // Get the innerHTML of the pre tag
+        $innerHTML = '';
+        foreach ($pre->childNodes as $child) {
+            $innerHTML .= $dom->saveHTML($child);
+        }
+        
+        // Check if it contains a table
+        if (stripos($innerHTML, '<table') !== false && stripos($innerHTML, 'directory-listing-table') !== false) {
+            // Re-parse this HTML properly
+            $tempDom = new DOMDocument();
+            libxml_use_internal_errors(true);
+            @$tempDom->loadHTML('<?xml encoding="UTF-8">' . $innerHTML);
+            $dom = $tempDom;
+            $foundTableInPre = true;
+            break;
+        }
+    }
+    
+    $tables = $dom->getElementsByTagName('table');
+    $result = [];
+    $debugInfo = ['tables_found' => 0, 'rows_checked' => 0, 'links_found' => 0, 'filtered_reasons' => [], 'pre_reparse' => $foundTableInPre];
+    
+    foreach ($tables as $table) {
+        $class = $table->getAttribute('class');
+        $debugInfo['tables_found']++;
+        
+        // Accept both 'directory-listing-table' and tables with 'directory-listing-table' in their class list
+        if (stripos($class, 'directory-listing-table') === false) {
+            $debugInfo['filtered_reasons'][] = "Table skipped (class='$class')";
+            continue;
+        }
+        
+        foreach ($table->getElementsByTagName('tr') as $tr) {
+            $debugInfo['rows_checked']++;
+            $tds = $tr->getElementsByTagName('td');
+            if ($tds->length < 3) {
+                if ($debugInfo['rows_checked'] <= 5) $debugInfo['filtered_reasons'][] = "Row {$debugInfo['rows_checked']}: not enough cells ({$tds->length})";
+                continue;
+            }
+            $firstTd = $tds->item(0);
+            
+            // Debug: check what's in the first TD
+            if ($debugInfo['rows_checked'] <= 10) {
+                $tdContent = substr(trim($firstTd->textContent), 0, 100);
+                $tdLinks = $firstTd->getElementsByTagName('a')->length;
+                // Get raw HTML of the TD to see structure
+                $tdHtml = $dom->saveHTML($firstTd);
+                $debugInfo['filtered_reasons'][] = "Row {$debugInfo['rows_checked']}: TD has $tdLinks links, HTML: " . substr($tdHtml, 0, 200);
+            }
+            
+            $link = $firstTd->getElementsByTagName('a')->item(0);
+            if (!$link) {
+                // No link found - this might be a restricted file on Archive.org
+                // In this case, the TD contains only the filename text
+                // Check if this is a restricted file row
+                $rowClass = $tr->getAttribute('class');
+                if (stripos($rowClass, 'restricted') !== false || $tds->length >= 3) {
+                    // Try to extract filename from TD text content
+                    $fileName = trim($firstTd->textContent);
+                    if ($fileName !== '' && substr($fileName, -1) !== '/') {
+                        $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+                        if (in_array($extension, $validExtensions)) {
+                            // Build the URL ourselves
+                            $fileSize = $tds->length >= 3 ? trim($tds->item(2)->textContent) : '';
+                            
+                            if ($isUrl && !preg_match('/^https?:\/\//', $fileName)) {
+                                $base = rtrim($urlOrFragment, '/') . '/';
+                                $fullUrl = $base . rawurlencode($fileName);
+                            } else {
+                                $fullUrl = $fileName;
+                            }
+                            
+                            $result[] = [$fileName, $fullUrl, $fileSize];
+                            $debugInfo['links_found']++; // Count as found even without <a> tag
+                        }
+                    }
+                }
+                if ($debugInfo['rows_checked'] <= 5) $debugInfo['filtered_reasons'][] = "Row {$debugInfo['rows_checked']}: no link found";
+                continue;
+            }
+            
+            $debugInfo['links_found']++;
+            $fileName = trim($link->textContent);
+            
+            if ($fileName === '' || stripos($fileName, 'Go to parent directory') !== false) {
+                if ($debugInfo['links_found'] <= 3) $debugInfo['filtered_reasons'][] = "Link {$debugInfo['links_found']}: parent dir or empty";
+                continue;
+            }
+            
+            // Decode URL-encoded filename from href as fallback
+            $href = $link->getAttribute('href');
+            if ($href === '') {
+                if ($debugInfo['links_found'] <= 3) $debugInfo['filtered_reasons'][] = "Link {$debugInfo['links_found']}: empty href";
+                continue;
+            }
+            
+            // Use href to extract clean filename (better than textContent which might have extra text)
+            // For relative paths, parse_url might not work correctly, so handle both cases
+            $parsed = @parse_url($href);
+            $pathPart = isset($parsed['path']) ? $parsed['path'] : $href;
+            $hrefFileName = urldecode(basename($pathPart));
+            if ($hrefFileName !== '' && $hrefFileName !== '.' && $hrefFileName !== '..') {
+                $fileName = $hrefFileName;
+            }
+            
+            $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+            if (!in_array($extension, $validExtensions)) {
+                if ($debugInfo['links_found'] <= 5) $debugInfo['filtered_reasons'][] = "Link {$debugInfo['links_found']}: ext '$extension' not in validExtensions (file: $fileName)";
+                continue;
+            }
+            
+            $fileSize = trim($tds->item(2)->textContent);
+            
+            if ($isUrl && !preg_match('/^https?:\/\//', $href)) {
+                $base = rtrim($urlOrFragment, '/') . '/';
+                $fullUrl = $base . ltrim($href, '/');
+            } else {
+                $fullUrl = $href;
+            }
+            $result[] = [$fileName, $fullUrl, $fileSize];
+        }
+    }
+    
+    // Store debug info globally so it can be accessed by caller
+    $__parse_debug__ = json_encode($debugInfo, JSON_PRETTY_PRINT);
+    
+    return $result;
+}
+function parse_archiveorg_pre($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+    $links = [];
+    foreach ($dom->getElementsByTagName('pre') as $pre) {
+        foreach ($pre->getElementsByTagName('a') as $a) {
+            $fileName = $a->textContent;
+            $href = $a->getAttribute('href');
+            $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+            if (!in_array($extension, $validExtensions)) continue;
+            if ($fileName === "Go to parent directory") continue;
+            if (preg_match('/^https?:\/\//', $href)) {
+                $fullUrl = $href;
+            } else {
+                $fullUrl = rtrim($urlOrFragment, '/') . '/' . ltrim($href, '/');
+            }
+            $links[] = [$fileName, $fullUrl, ''];
+        }
+    }
+    return $links;
+}
+function parse_archiveorg_archext($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  $results = [];
+  foreach ($dom->getElementsByTagName('table') as $table) {
+    if ($table->getAttribute('class') !== 'archext') continue;
+    // Prendre les tr du tbody si présent, sinon du table
+    $trs = [];
+    foreach ($table->childNodes as $child) {
+      if ($child->nodeName === 'tbody') {
+        foreach ($child->childNodes as $tr) {
+          if ($tr->nodeName === 'tr') $trs[] = $tr;
+        }
+      }
+    }
+    if (!$trs) {
+      foreach ($table->childNodes as $tr) {
+        if ($tr->nodeName === 'tr') $trs[] = $tr;
+      }
+    }
+    foreach ($trs as $tr) {
+      // Sauter les lignes d'en-tête (premier enfant <th>)
+      $firstChild = $tr->firstChild;
+      if ($firstChild && $firstChild->nodeName === 'th') continue;
+      $tds = $tr->getElementsByTagName('td');
+      if ($tds->length < 1) continue;
+      $firstTd = $tds->item(0);
+      $a = $firstTd->getElementsByTagName('a')->item(0);
+      if (!$a) continue;
+      $fileName = trim($a->textContent);
+      if ($fileName === '' || substr($fileName, -1) === '/') continue;
+      if (stripos($fileName, 'Go to parent directory') !== false) continue;
+      $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+      if (!in_array($extension, $validExtensions)) continue;
+      $href = $a->getAttribute('href');
+      if (strpos($href, '//') === 0) {
+        $fullUrl = 'https:' . $href;
+      } elseif ($isUrl && !preg_match('/^https?:\/\//', $href)) {
+        $fullUrl = rtrim($urlOrFragment, '/') . '/' . ltrim($href, '/');
+      } else { $fullUrl = $href; }
+      $size = '';
+      if ($tds->length >= 4) {
+        $sizeCandidate = trim($tds->item(3)->textContent);
+        if ($sizeCandidate !== '' && is_numeric($sizeCandidate)) {
+          $size = format_bytes($sizeCandidate);
+        } else if ($sizeCandidate !== '') {
+          $size = $sizeCandidate;
+        }
+      }
+      $results[] = [$fileName, $fullUrl, $size];
+    }
+    if ($results) return $results;
+  }
+  return [];
+}
+function parse_archiveorg_zipview($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  // Only attempt on zipview.php pages
+  if (stripos($urlOrFragment, 'zipview.php') === false) return [];
+  $results = [];
+  // Strategy: iterate table rows if present, else fallback to links
+  foreach ($dom->getElementsByTagName('table') as $table) {
+    $trs = $table->getElementsByTagName('tr');
+    foreach ($trs as $tr) {
+      $tds = $tr->getElementsByTagName('td');
+      if ($tds->length < 1) continue;
+      $a = $tds->item(0)->getElementsByTagName('a')->item(0);
+      if (!$a) continue;
+      $fname = trim($a->textContent);
+      if ($fname === '' || substr($fname, -1) === '/') continue;
+      $ext = strtolower(pathinfo($fname, PATHINFO_EXTENSION));
+      if (!in_array($ext, $validExtensions)) continue;
+      $href = $a->getAttribute('href');
+      $full = resolve_url($urlOrFragment, $href);
+      $size = '';
+      // try to find a size cell with KB/MB/GB or digits
+      for ($i=1; $i<$tds->length; $i++) {
+        $txt = trim($tds->item($i)->textContent);
+        if ($txt !== '' && (preg_match('/(\d+\.?\d*\s*[KMGTP]?B)/i', $txt) || is_numeric($txt))) { $size = $txt; break; }
+      }
+      $results[] = [$fname, $full, $size];
+    }
+    if ($results) return $results;
+  }
+  // Fallback: scan all anchors
+  foreach ($dom->getElementsByTagName('a') as $a) {
+    $fname = trim($a->textContent);
+    if ($fname === '' || substr($fname, -1) === '/') continue;
+    $ext = strtolower(pathinfo($fname, PATHINFO_EXTENSION));
+    if (!in_array($ext, $validExtensions)) continue;
+    $href = $a->getAttribute('href');
+    if ($href === '') continue;
+    $full = resolve_url($urlOrFragment, $href);
+    $results[] = [$fname, $full, ''];
+  }
+  return $results;
+}
+function parse_auto($html, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+    global $__parse_debug__;
+    $__parse_debug__ = '';
+
+    // --- JSON feed: server returns [[name, url, size], ...] directly ---
+    // Covers any URL whose response is a JSON array of [string, string, ?string] rows,
+    // e.g. a server-side rgsx_feed.php that pre-expands local .torrent files.
+    if ($isUrl && $html !== '') {
+        $trimmed = ltrim($html);
+        if (isset($trimmed[0]) && $trimmed[0] === '[') {
+            $decoded = @json_decode($trimmed, true);
+            if (is_array($decoded) && count($decoded) > 0) {
+                $first = reset($decoded);
+                if (is_array($first) && count($first) >= 2
+                    && is_string($first[0] ?? null) && is_string($first[1] ?? null)) {
+                    $__parse_debug__ = 'JSON feed: ' . count($decoded) . ' entries.';
+                    return $decoded;
+                }
+            }
+        }
+    }
+
+    $dom = new DOMDocument();
+    libxml_use_internal_errors(true);
+    @$dom->loadHTML($html);
+    
+    $res = parse_archiveorg_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($res) return $res;
+    $archExtRes = parse_archiveorg_archext($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($archExtRes) return $archExtRes;
+  $zipViewRes = parse_archiveorg_zipview($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+  if ($zipViewRes) return $zipViewRes;
+    $preRes = parse_archiveorg_pre($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($preRes) return $preRes;
+  $has1fichier = false; $hasClassic = false;
+  foreach ($dom->getElementsByTagName('td') as $td) {
+    $cls = (string)$td->getAttribute('class');
+    if ($cls && (stripos($cls, 'file-obj') !== false || stripos($cls, 'fichier') !== false)) $has1fichier = true;
+    if ($cls === 'link' || stripos($cls, 'link') !== false) $hasClassic = true;
+    if ($has1fichier && $hasClassic) break;
+  }
+    if ($has1fichier) return parse_1fichier_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($hasClassic)  return parse_classic_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+  // Check for lolroms-style file-list (ul.file-list > li.file-item)
+  $hasLolroms = false;
+  foreach ($dom->getElementsByTagName('ul') as $ul) {
+    if (stripos((string)$ul->getAttribute('class'), 'file-list') !== false) {
+      $hasLolroms = true;
+      break;
+    }
+  }
+  if ($hasLolroms) {
+    $lolRes = parse_lolroms($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($lolRes) return $lolRes;
+  }
+  // Check for vimm.net vault pages (both letter pages and individual game pages)
+  $hasVimm = false;
+  if ($isUrl && preg_match('#^https?://vimm\.net/vault/#i', $urlOrFragment)) {
+    $hasVimm = true;
+  }
+  if ($hasVimm) {
+    $vimmRes = parse_vimm_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($vimmRes) return $vimmRes;
+  }
+  // Check for edgeemu.net browse pages
+  $hasEdgeEmu = false;
+  if ($isUrl && preg_match('#^https?://edgeemu\.net/browse/#i', $urlOrFragment)) {
+    $hasEdgeEmu = true;
+  }
+  if ($hasEdgeEmu) {
+    $edgeEmuRes = parse_edgeemu_net($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($edgeEmuRes) return $edgeEmuRes;
+  }
+  // Dedicated parser for retrogamesets Thomsonito torrents list
+  if ($isUrl && preg_match('#^https?://(?:www\.)?retrogamesets\.fr/thomsonito_torrents(?:/|\?|$)#i', $urlOrFragment)) {
+    $rgsRes = parse_retrogamesets_torrents($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($rgsRes) return $rgsRes;
+  }
+  // Last resort: generic link scan
+  $g = parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+  return $g;
+}
+
+return;
+
+// -------------- State (Session) --------------------
+$_SESSION['systems_list'] = $_SESSION['systems_list'] ?? [];
+$_SESSION['platform_games'] = $_SESSION['platform_games'] ?? []; // map: filename => array rows
+$_SESSION['images'] = $_SESSION['images'] ?? []; // array of [name, tmp_path, type]
+$_SESSION['active_tab'] = $_SESSION['active_tab'] ?? 'tab-scrape';
+
+// The central MariaDB catalog is authoritative; scrape results remain session-scoped.
+if (rgsx_catalog_db_available()) {
+  try {
+    $_SESSION['systems_list'] = array_map(static function($row) {
+      return [
+        'platform_name' => (string)($row['platform_name'] ?? ''),
+        'folder' => (string)($row['folder'] ?? ''),
+        'platform_image' => (string)($row['platform_image'] ?? ''),
+      ];
+    }, rgsx_catalog_db_platforms());
+    $_SESSION['platform_games'] = rgsx_catalog_db_games_map();
+    $catalogImages = rgsx_catalog_db_load_session_images();
+    $knownImageNames = [];
+    foreach ($_SESSION['images'] as $existingImage) {
+      $knownImageNames[basename((string)($existingImage['name'] ?? ''))] = true;
+    }
+    foreach ($catalogImages as $catalogImage) {
+      $imageName = basename((string)($catalogImage['name'] ?? ''));
+      if ($imageName !== '' && !isset($knownImageNames[$imageName])) {
+        $_SESSION['images'][] = $catalogImage;
+        $knownImageNames[$imageName] = true;
+      }
+    }
+  } catch (Throwable $databaseException) {
+    rgsx_debug_log('catalog.load_failed', ['error' => $databaseException->getMessage()]);
+  }
+}
+
+// -------------- Actions routing --------------------
+$action = $_POST['action'] ?? '';
+$activeTab = $_POST['active_tab'] ?? $_GET['active_tab'] ?? $_SESSION['active_tab'] ?? 'tab-scrape';
+$message = '';
+$error = '';
+$allowedExtensions = [
+  '40t','68k','7z','a0','a26','a52','a78','abs','actionmax','adf','adl','adm','ads','adz','app','apd','atr','atm','atx','auto','axf','b0','bat','bg1','bg2','bbc','bin','bml','boom3','bs','bsx','c','cas','cbn','ccc','cci','ccd','cdi','cdm','cdg','cdr','chd','cmd','cof','col','cqm','cqi','croft','crt','cso','csw','cue','d64','d77','d81','d88','daphne','dat','ddp','dfi','dim','dk','dms','dol','dos','dosbox','dosz','dsk','dup','dx1','dx2','easyrpg','eduke32','elf','exe','fba','fds','fig','fpkg','fpt','frd','g64','gam','game','gbc','gcz','gd3','gd7','gdi','gem','gen','gg','gz','hb','hdf','hdm','hex','hfe','how','hypseus','ikemen','ima','img','int','ipf','ipk3','iso','iwd','iwd2','j64','jag','jfd','kip','lbd','lha','libretro','lnk','love','lua','lutro','lux','lx','m3u','m3u8','m5','m7','md','mdf','mds','mfi','mfm','mgw','min','msa','mugen','mx1','mx2','n64','nca','ndd','neo','nes','nib','nrg','nro','nso','nx','ogv','p','p8','pak','pb','pbp','pc','pce','pk3','pkg','png','po','prg','prx','pst','psv','pxp','rar','raze','rem','ri','rom','rp9','rpk','rpx','rsdk','rvz','sbw','sc','scummvm','sfc','sg','sgd','smc','sms','solarus','squashfs','st','sv','swf','swc','symbian','t64','t77','table','tap','tar','tfd','tgc','tic','toc','torrent','txt','u88','uae','uef','ufi','uze','v32','v64','vb','vboy','vec','vpk','vpx','wad','wav','wbfs','wia','win','windows','wine','wsquashfs','woz','ws','wsc','wua','wud','wux','xbe','xcp','xci','xdf','xex','xfd','zip','zar','zcxi','zso'
+];
+
+if ($action !== '') {
+  rgsx_debug_log('action.start', [
+    'action' => $action,
+    'active_tab' => $activeTab,
+    'systems_count' => count($_SESSION['systems_list'] ?? []),
+    'platform_files_count' => count($_SESSION['platform_games'] ?? []),
+    'images_count' => count($_SESSION['images'] ?? []),
+  ]);
+}
+
+try {
+  switch ($action) {
+    case 'import_data_zip':
+      // Accept either uploaded ZIP or a URL to a ZIP
+      $zipTmp = '';
+      if (!empty($_FILES['data_zip']['name']) && $_FILES['data_zip']['error'] === UPLOAD_ERR_OK) {
+        $zipTmp = $_FILES['data_zip']['tmp_name'];
+      } else {
+        $url = trim($_POST['data_zip_url'] ?? '');
+        if ($url) {
+          $ctx = stream_context_create(['http'=>['timeout'=>45, 'user_agent'=>'Mozilla/5.0']]);
+          $data = @file_get_contents($url, false, $ctx);
+          $http_response = isset($http_response_header) ? implode(' | ', $http_response_header) : '';
+          if ($data !== false) {
+            $zipTmp = tempnam(sys_get_temp_dir(), 'rgsx_data_');
+            @file_put_contents($zipTmp, $data);
+          } else {
+            $error = 'Téléchargement du ZIP impossible.';
+            $debugLog = '['.date('Y-m-d H:i:s')."] ECHEC ZIP URL: $url\nHTTP: $http_response\n";
+            file_put_contents(__DIR__ . '/assets/debug.log', $debugLog, FILE_APPEND);
+          }
+        } else {
+          $error = 'Aucun fichier ni URL fournis.';
+        }
+      }
+      if ($zipTmp && class_exists('ZipArchive')) {
+        $za = new ZipArchive();
+        if ($za->open($zipTmp) === true) {
+          $addedSystems = false; $gamesCount = 0; $imagesCount = 0; $seen = [];
+          for ($i=0; $i<$za->numFiles; $i++) {
+            $name = $za->getNameIndex($i);
+            if (!$name) continue;
+            $norm = strtolower(strtr($name, '\\', '/'));
+            $base = basename($norm); // lowercased helper for matching only
+            $baseOrig = basename(strtr($name, '\\', '/')); // original case for storage
+            if (count($seen) < 30) { $seen[] = $norm; }
+
+            // systems_list.json anywhere in the archive
+            if ($base === 'systems_list.json') {
+              $json = $za->getFromIndex($i);
+              $arr = @json_decode($json, true);
+              if (is_array($arr)) { $_SESSION['systems_list'] = $arr; $addedSystems = true; }
+              continue;
+            }
+            // games/*.json from any nesting level (…/games/xxx.json)
+            if (substr($norm, -5) === '.json' && (strpos($norm, '/games/') !== false || strpos($norm, 'games/') === 0)) {
+              $json = $za->getFromIndex($i);
+              $arr = @json_decode($json, true);
+              if (is_array($arr)) { $_SESSION['platform_games'][$baseOrig] = $arr; $gamesCount++; }
+              continue;
+            }
+            // images/* from any nesting level (…/images/filename)
+            if (strpos($norm, '/images/') !== false || strpos($norm, 'images/') === 0) {
+              if ($base === '' || $base === '.' || $base === '..' || substr($norm, -1) === '/') continue; // skip dirs
+              $data = $za->getFromIndex($i);
+              if ($data !== false) {
+                $destDir = get_session_images_dir();
+                $dest = $destDir . DIRECTORY_SEPARATOR . $baseOrig;
+                @file_put_contents($dest, $data);
+                $_SESSION['images'][] = ['name'=>$baseOrig, 'tmp'=>$dest, 'type'=>guess_mime_from_ext($baseOrig)];
+                $imagesCount++;
+              }
+              continue;
+            }
+          }
+          $za->close();
+          $messageParts = [];
+          if ($addedSystems) {
+            // Ensure default platform_image for empty entries
+            foreach ($_SESSION['systems_list'] as $k => $sys) {
+              $pn = (string)($sys['platform_name'] ?? '');
+              $pi = (string)($sys['platform_image'] ?? '');
+              if ($pn !== '' && $pi === '') { $_SESSION['systems_list'][$k]['platform_image'] = $pn . '.png'; }
+            }
+            $messageParts[] = 'systems_list.json chargé';
+          }
+          if ($gamesCount>0) $messageParts[] = $gamesCount.' plateforme(s)';
+          if ($imagesCount>0) $messageParts[] = $imagesCount.' image(s)';
+          if (!empty($messageParts)) {
+            $message = 'DATA ZIP importé: ' . implode(', ', $messageParts);
+          } else {
+            $examples = $seen ? (' Exemples trouvés: ' . implode(', ', array_slice($seen, 0, 5))) : '';
+            $message = 'DATA ZIP importé: aucune donnée reconnue.' . $examples . ' (Attendu: systems_list.json, dossier games/ avec *.json, dossier images/ avec fichiers)';
+          }
+        } else {
+          $error = 'Impossible d\'ouvrir le ZIP.';
+        }
+        // Clean tmp if downloaded
+        if (!empty($_POST['data_zip_url']) && is_file($zipTmp)) { @unlink($zipTmp); }
+      } else if ($zipTmp) {
+        $error = 'Support ZIP indisponible (ZipArchive manquant).';
+        if (!empty($_POST['data_zip_url']) && is_file($zipTmp)) { @unlink($zipTmp); }
+      }
+      break;
+    // Scrape
+    case 'scrape':
+      $urls = trim($_POST['urls'] ?? '');
+      $uploadedUrlsError = null;
+      $uploadedUrls = read_uploaded_scrape_text_file('urls_file', $uploadedUrlsError);
+      if ($uploadedUrlsError !== null) {
+        $error = $uploadedUrlsError;
+        break;
+      }
+      $uploadedInputs = $uploadedUrls !== '' ? array_values(array_filter(array_map('trim', preg_split('/\n+/', $uploadedUrls)))) : [];
+      // Compute valid extensions early so torrent rows can store them
+      $exts = isset($_POST['extensions']) ? array_map('strtolower', (array)$_POST['extensions']) : $allowedExtensions;
+      $validExtensions = array_values(array_intersect($exts, $allowedExtensions));
+      // Torrent-specific extension override: comma-separated field takes priority for torrent rows
+      $torrentExtensionsRaw = trim((string)($_POST['torrent_extensions'] ?? ''));
+      if ($torrentExtensionsRaw !== '') {
+        $torrentValidExtensions = array_values(array_filter(array_map(function($e) { return strtolower(trim($e, ' .')); }, preg_split('/[,;\s]+/', $torrentExtensionsRaw)), fn($e) => $e !== ''));
+      } else {
+        $torrentValidExtensions = $validExtensions;
+      }
+      // Handle uploaded .torrent file
+      $uploadedTorrentRows = [];
+      if (isset($_FILES['torrent_file']) && is_array($_FILES['torrent_file']) && (int)($_FILES['torrent_file']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
+        $torrentUpload = $_FILES['torrent_file'];
+        $torrentOrigName = basename(trim((string)($torrentUpload['name'] ?? '')));
+        $torrentTmpPath  = (string)($torrentUpload['tmp_name'] ?? '');
+        if ($torrentOrigName === '' || $torrentTmpPath === '' || !is_readable($torrentTmpPath)) {
+          $error = t('err.torrent_upload_invalid', 'Invalid torrent file upload.');
+          break;
+        }
+        if (strtolower(pathinfo($torrentOrigName, PATHINFO_EXTENSION)) !== 'torrent') {
+          $error = t('err.torrent_upload_type', 'The uploaded file must be a .torrent file.');
+          break;
+        }
+        $torrentBytes = @file_get_contents($torrentTmpPath);
+        if ($torrentBytes === false || $torrentBytes === '') {
+          $error = t('err.torrent_upload_read', 'Unable to read uploaded torrent file.');
+          break;
+        }
+        // Store torrent in session temp dir so it can be served back via ?serve_torrent=
+        $torrentDestDir = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'rgsx_torrents_' . session_id();
+        if (!is_dir($torrentDestDir)) { @mkdir($torrentDestDir, 0700, true); }
+        $safeTorrentName = preg_replace('/[^\w\-.]+/u', '_', $torrentOrigName);
+        $torrentDestPath = $torrentDestDir . DIRECTORY_SEPARATOR . $safeTorrentName;
+        if (!@file_put_contents($torrentDestPath, $torrentBytes)) {
+          $error = t('err.torrent_upload_write', 'Unable to store uploaded torrent file.');
+          break;
+        }
+        if (!isset($_SESSION['torrents'])) { $_SESSION['torrents'] = []; }
+        // Avoid duplicates
+        $alreadyStored = false;
+        foreach ($_SESSION['torrents'] as $t) { if ($t['name'] === $safeTorrentName) { $alreadyStored = true; break; } }
+        if (!$alreadyStored) { $_SESSION['torrents'][] = ['name' => $safeTorrentName, 'tmp' => $torrentDestPath]; }
+        // Build serve URL for this torrent (reachable by RGSX on same machine for actual downloads)
+        $scheme = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http');
+        $host   = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $selfScript = $_SERVER['SCRIPT_NAME'] ?? '';
+        $torrentServeUrl = $scheme . '://' . $host . $selfScript . '?serve_torrent=' . rawurlencode($safeTorrentName);
+        // Expand entries immediately
+        try {
+          $torrentEntries = rgsx_extract_torrent_entries_from_bytes($torrentBytes, $torrentServeUrl);
+          $expandedRows = rgsx_torrent_entries_to_rows($torrentEntries, $torrentServeUrl, $torrentValidExtensions);
+          $uploadedTorrentRows = array_merge($uploadedTorrentRows, $expandedRows);
+        } catch (Throwable $torrentExc) {
+          $error = t('err.torrent_parse_failed', 'Unable to parse torrent file: ') . $torrentExc->getMessage();
+          break;
+        }
+      }
+      $scrapePassword = trim($_POST['scrape_password'] ?? '');
+      $scrapeCookies = trim($_POST['scrape_cookies'] ?? ($_SESSION['scrape_cookies'] ?? ''));
+      $rememberCookies = !empty($_POST['remember_cookies']);
+      $extraHeaders = [];
+      if ($scrapeCookies !== '') { $extraHeaders[] = 'Cookie: ' . $scrapeCookies; }
+      if ($rememberCookies) {
+        $_SESSION['scrape_cookies'] = $scrapeCookies;
+      } else if (array_key_exists('remember_cookies', $_POST) && !$rememberCookies) {
+        // explicit uncheck clears stored cookies
+        unset($_SESSION['scrape_cookies']);
+      }
+      if (!$urls && empty($uploadedInputs) && empty($uploadedTorrentRows)) { $error = 'Entrée vide.'; break; }
+      if (!$validExtensions && empty($uploadedTorrentRows)) { $error = 'Aucune extension valide.'; break; }
+      // Detect URL-encoded HTML (e.g. %20 instead of spaces from browser copy) and decode it
+      if (strpos($urls, '%20') !== false && preg_match('/<[a-zA-Z]/', urldecode($urls))) {
+        $urls = urldecode($urls);
+      }
+      $inputs = [];
+      if ($urls !== '') {
+        if (is_html_block($urls)) { $inputs = [$urls]; }
+        else { $inputs = array_values(array_filter(array_map('trim', preg_split('/[\n,]+/', $urls)))); }
+      }
+      $pipedRows = [];
+      $uploadedRows = [];
+      $uploadedIgnoredExtensions = [];
+      $remainingInputs = [];
+      foreach ($inputs as $line) {
+        $parsedPipedRow = parse_piped_source_row($line, $validExtensions);
+        if (is_array($parsedPipedRow)) {
+          $pipedRows[] = $parsedPipedRow;
+        } else {
+          $remainingInputs[] = $line;
+        }
+      }
+      foreach ($uploadedInputs as $line) {
+        $parsedPipedRow = parse_piped_source_row($line, $validExtensions);
+        if (is_array($parsedPipedRow)) {
+          $uploadedRows[] = $parsedPipedRow;
+          continue;
+        }
+        // Expand torrent URLs immediately
+        if (is_url($line) && is_torrent_url($line)) {
+          try {
+            $tfEntries = rgsx_fetch_torrent_entries_php($line);
+            $tfRows = rgsx_torrent_entries_to_rows($tfEntries, $line, $torrentValidExtensions);
+            foreach ($tfRows as $tfRow) { $uploadedRows[] = $tfRow; }
+          } catch (Throwable $tfExc) {
+            // Ignore and treat as unrecognized line
+          }
+          continue;
+        }
+        $parsedDirectUrlRow = parse_direct_source_url_row($line, $validExtensions, $torrentValidExtensions);
+        if (is_array($parsedDirectUrlRow)) {
+          $uploadedRows[] = $parsedDirectUrlRow;
+          continue;
+        }
+        if (is_url($line)) {
+          $linePath = parse_url((string)$line, PHP_URL_PATH);
+          $lineExt = is_string($linePath) ? strtolower(pathinfo($linePath, PATHINFO_EXTENSION)) : '';
+          if ($lineExt !== '') {
+            $uploadedIgnoredExtensions[$lineExt] = true;
+          }
+        }
+      }
+      $inputs = $remainingInputs;
+      if (empty($pipedRows) && empty($uploadedRows) && empty($inputs) && empty($uploadedTorrentRows)) {
+        $error = t('err.scrape_no_recognized_input', 'No recognizable entries were found in the text/file. Expected direct URLs or name|title_id|url lines.');
+        if (!empty($uploadedIgnoredExtensions)) {
+          $detectedExts = implode(', ', array_slice(array_keys($uploadedIgnoredExtensions), 0, 10));
+          $error .= ' ' . t('err.scrape_detected_exts', 'Detected extensions') . ': ' . $detectedExts . '.';
+        }
+        break;
+      }
+      // Normalize schemeless Archive.org lines to valid URLs
+      $inputs = array_map(function($line){
+        if ($line === '') return $line;
+        // Prepend https:// if it looks like a domain/path
+        if (preg_match('#^//#', $line)) { return 'https:' . $line; }
+        if (!preg_match('#^https?://#i', $line)) {
+          if (preg_match('#^(?:www\.)?archive\.org/#i', $line)) return 'https://' . $line;
+          if (preg_match('#^ia\d+\.(?:us\.)?archive\.org/#i', $line)) return 'https://' . $line;
+          if (preg_match('#^(?:www\.)?lolroms\.com/#i', $line)) return 'https://' . $line;
+        }
+        return $line;
+      }, $inputs);
+      // Expand vimm.net platform URLs to all games from # to Z
+      $expandedInputs = [];
+      foreach ($inputs as $input) {
+        $expandedInputs = array_merge($expandedInputs, expand_vimm_platform_url($input));
+      }
+      $inputs = $expandedInputs;
+      $scraped = [];
+      $debugHtmls = [];
+      if (!empty($pipedRows)) {
+        $scraped[] = ['label' => 'Pasted links (name|title_id|url)', 'rows' => $pipedRows];
+        $debugHtmls[] = [
+          'label' => 'Pasted links (name|title_id|url)',
+          'status' => 200,
+          'error' => '',
+          'effective_url' => '',
+          'parsed_count' => count($pipedRows),
+          'link_count' => 0,
+          'table_count' => 0,
+          'password_debug' => '',
+          'cookies' => $scrapeCookies !== '' ? 'provided' : '',
+          'valid_extensions_count' => count($validExtensions),
+          'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
+          'parse_debug' => 'Direct piped rows ingested without remote fetch.',
+          'raw_sample' => '',
+          'error_log' => '',
+          'html' => ''
+        ];
+      }
+      if (!empty($uploadedTorrentRows)) {
+        $scraped[] = ['label' => 'Uploaded torrent file', 'rows' => $uploadedTorrentRows];
+        $debugHtmls[] = [
+          'label' => 'Uploaded torrent file',
+          'status' => 200,
+          'error' => '',
+          'effective_url' => '',
+          'parsed_count' => count($uploadedTorrentRows),
+          'link_count' => 0,
+          'table_count' => 0,
+          'password_debug' => '',
+          'cookies' => '',
+          'valid_extensions_count' => count($torrentValidExtensions),
+          'extensions_sample' => implode(', ', array_slice($torrentValidExtensions, 0, 20)),
+          'parse_debug' => 'Torrent file expanded immediately: ' . count($uploadedTorrentRows) . ' entries after extension filter (' . (empty($torrentValidExtensions) ? 'all' : implode(', ', $torrentValidExtensions)) . ').',
+          'raw_sample' => '',
+          'error_log' => '',
+          'html' => ''
+        ];
+      }
+      if (!empty($uploadedRows)) {
+        $scraped[] = ['label' => 'Uploaded links file', 'rows' => $uploadedRows];
+        $debugHtmls[] = [
+          'label' => 'Uploaded links file',
+          'status' => 200,
+          'error' => '',
+          'effective_url' => '',
+          'parsed_count' => count($uploadedRows),
+          'link_count' => 0,
+          'table_count' => 0,
+          'password_debug' => '',
+          'cookies' => '',
+          'valid_extensions_count' => count($validExtensions),
+          'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
+          'parse_debug' => 'Uploaded text file rows ingested without remote fetch.',
+          'raw_sample' => '',
+          'error_log' => '',
+          'html' => ''
+        ];
+      }
+      // Apply URL normalization only to actual URLs, never to pasted HTML blocks.
+      $inputs = array_map(function($line) {
+        return is_html_block($line) ? $line : normalize_url_like($line);
+      }, $inputs);
+      $inputs = array_map(function($line) {
+        return is_html_block($line) ? $line : normalize_archiveorg_scrape_url($line);
+      }, $inputs);
+      foreach ($inputs as $index => $input) {
+        $isUrl = is_url($input);
+        $isHtml = !$isUrl && is_html_block($input);
+        $label = build_scrape_input_label($input, $index, $isHtml);
+        if (!$isUrl && !$isHtml) {
+          // Enregistrer un debug pour les lignes ignorées
+          $debugHtmls[] = [
+            'label' => $label,
+            'status' => 0,
+            'error' => 'Entrée ignorée: ni URL valide ni bloc HTML',
+            'effective_url' => '',
+            'html' => substr($input, 0, 2000)
+          ];
+          continue;
+        }
+        if ($isUrl && is_torrent_url($input)) {
+          $torrentParseDebug = '';
+          try {
+            $torrentAllEntries = rgsx_fetch_torrent_entries_php($input);
+            $parsed = rgsx_torrent_entries_to_rows($torrentAllEntries, $input, $torrentValidExtensions);
+            $torrentParseDebug = 'Torrent expanded: ' . count($torrentAllEntries) . ' total entries, ' . count($parsed) . ' after extension filter (' . (empty($torrentValidExtensions) ? 'none' : implode(', ', $torrentValidExtensions)) . ').';
+          } catch (Throwable $torrentExc) {
+            $parsed = [];
+            $torrentParseDebug = 'Torrent fetch/parse failed: ' . $torrentExc->getMessage();
+          }
+          if (!empty($parsed)) {
+            $scraped[] = ['label' => $label, 'rows' => $parsed];
+          }
+          $debugHtmls[] = [
+            'label' => $label,
+            'status' => !empty($parsed) ? 200 : 0,
+            'error' => empty($parsed) ? $torrentParseDebug : '',
+            'effective_url' => $input,
+            'parsed_count' => count($parsed),
+            'link_count' => 0,
+            'table_count' => 0,
+            'password_debug' => '',
+            'cookies' => $scrapeCookies !== '' ? 'provided' : '',
+            'valid_extensions_count' => count($torrentValidExtensions),
+            'extensions_sample' => implode(', ', array_slice($torrentValidExtensions, 0, 20)),
+            'parse_debug' => $torrentParseDebug,
+            'raw_sample' => '',
+            'error_log' => '',
+            'html' => ''
+          ];
+          continue;
+        }
+        $usedPassword = false;
+        if ($isUrl) {
+          // If it's a 1fichier directory URL, prefer the manual password and fallback to assets/pwd.json.
+          $u = @parse_url($input);
+          $host = strtolower($u['host'] ?? '');
+          $path = $u['path'] ?? '';
+          $resolvedPassword = $scrapePassword;
+          if ($resolvedPassword === '' && strpos($host, '1fichier.com') !== false && is_string($path) && strpos($path, '/dir/') === 0) {
+            $resolvedPassword = resolve_scrape_password_for_url($input);
+          }
+          if ($resolvedPassword !== '' && strpos($host, '1fichier.com') !== false && is_string($path) && strpos($path, '/dir/') === 0) {
+            $resp = http_fetch_1fichier_with_password($input, $resolvedPassword, 30);
+            $usedPassword = true;
+          } else {
+            $resp = http_fetch($input, 30, $extraHeaders);
+          }
+          $html = (string)($resp['body'] ?? '');
+          // Detect Cloudflare challenge page (JS challenge / managed challenge)
+          if ($html !== '' && (stripos($html, 'Just a moment') !== false || stripos($html, 'cf_chl_opt') !== false || stripos($html, 'challenge-platform') !== false)) {
+            $cfHost = $host ?: parse_url($input, PHP_URL_HOST);
+            $debugHtmls[] = [
+              'label' => $label,
+              'status' => (int)($resp['status'] ?? 0),
+              'error' => "Cloudflare challenge detected for $cfHost. Open the page in your browser, then Ctrl+U to view source, copy all, and paste it in the URLs field.",
+              'effective_url' => $resp['effective_url'] ?? $input,
+              'parsed_count' => 0,
+              'link_count' => 0,
+              'table_count' => 0,
+              'password_debug' => '',
+              'cookies' => $scrapeCookies !== '' ? 'provided' : '',
+              'valid_extensions_count' => 0,
+              'extensions_sample' => '',
+              'parse_debug' => 'Cloudflare JS challenge — system curl.exe fallback also failed.',
+              'raw_sample' => '',
+              'error_log' => '',
+              'html' => substr($html, 0, 2000)
+            ];
+            continue;
+          }
+        } else { $html = $input; $resp = ['ok'=>true,'status'=>200,'error'=>null,'effective_url'=>null]; }
+        // Base URL for parsing (handle redirects/fallbacks)
+        $baseForParse = $isUrl ? ((string)($resp['effective_url'] ?? $input) ?: $input) : '';
+        $parsed = [];
+        if ($html !== '') {
+          $parsed = parse_auto($html, $label, $isUrl, $baseForParse, $validExtensions);
+        }
+        
+        // Capture parse debug info
+        global $__parse_debug__;
+        $parseDebugInfo = $__parse_debug__ ?? '';
+        
+        // Also capture a sample of raw HTML around "10 Second Ninja" for debugging
+        $rawSample = '';
+        if (stripos($html, '10 Second Ninja') !== false || stripos($html, '10%20Second%20Ninja') !== false) {
+            $pos = stripos($html, '10 Second Ninja');
+            if ($pos === false) $pos = stripos($html, '10%20Second%20Ninja');
+            if ($pos !== false) {
+                $start = max(0, $pos - 300);
+                $rawSample = substr($html, $start, 600);
+            }
+        }
+        
+        // If Archive.org view_archive is blocked (403 or "Item not available") and parsing failed, try ZIP central directory listing via HTTP range
+        $looksBlocked = false;
+        if (!empty($html)) {
+          $hl = strtolower($html);
+          if (strpos($hl, 'item not available') !== false || strpos($hl, 'http 403') !== false) { $looksBlocked = true; }
+        }
+        if (empty($parsed) && $isUrl && stripos($input, 'view_archive.php') !== false && (((int)($resp['status'] ?? 0)) === 403 || $looksBlocked)) {
+          $info = archiveorg_zip_url_from_view_archive($input);
+          if ($info) {
+            $zipEntries = list_zip_entries_via_http_range($info['download'], 30, $extraHeaders);
+            if (!empty($zipEntries)) {
+              foreach ($zipEntries as $ze) {
+                $fname = $ze['name'];
+                $ext = strtolower(pathinfo($fname, PATHINFO_EXTENSION));
+                if (!in_array($ext, $validExtensions)) continue;
+                $size = $ze['usize'] > 0 ? format_bytes($ze['usize']) : '';
+                // Build a practical link via zipview.php fallback
+                $fileUrl = 'https://archive.org/zipview.php?zip=' . rawurlencode($info['archiveParam']) . '&file=' . rawurlencode($fname);
+                $parsed[] = [$fname, $fileUrl, $size];
+              }
+            }
+          }
+        }
+        // Expand any .torrent links found in the parsed rows (same as direct torrent input)
+        $torrentRows = [];
+        $regularRows = [];
+        if (!empty($parsed)) {
+          $expandedParsed = [];
+          $torrentLinksExpanded = 0;
+          $torrentLinksTotal = 0;
+          foreach ($parsed as $parsedRow) {
+            if (is_array($parsedRow) && count($parsedRow) >= 2 && is_string($parsedRow[1]) && is_torrent_url($parsedRow[1])) {
+              $torrentLinksTotal++;
+              try {
+                $tEntries = rgsx_fetch_torrent_entries_php($parsedRow[1]);
+                $tRows = rgsx_torrent_entries_to_rows($tEntries, $parsedRow[1], $torrentValidExtensions);
+                foreach ($tRows as $tr) { $expandedParsed[] = $tr; }
+                $torrentLinksExpanded++;
+              } catch (Throwable $tExc) {
+                $expandedParsed[] = $parsedRow; // keep original on error
+              }
+            } else {
+              $expandedParsed[] = $parsedRow;
+            }
+          }
+          if ($torrentLinksTotal > 0) {
+            $parsed = $expandedParsed;
+            $parseDebugInfo .= ' Torrents trouvés sur la page: ' . $torrentLinksExpanded . '/' . $torrentLinksTotal . ' expandés.';
+          }
+        }
+        // Keep Archive.org direct downloads and torrent-expanded downloads as separate choices.
+        if ($isUrl && stripos((string)(parse_url($input, PHP_URL_HOST) ?: ''), 'archive.org') !== false) {
+          foreach ($parsed as $parsedRow) {
+            $rowUrl = is_array($parsedRow) ? trim((string)($parsedRow[1] ?? '')) : '';
+            if (stripos($rowUrl, 'rgsx+torrent://') === 0 || is_torrent_url($rowUrl)) {
+              $torrentRows[] = $parsedRow;
+            } else {
+              $regularRows[] = $parsedRow;
+            }
+          }
+        }
+        if (!empty($regularRows) && !empty($torrentRows)) {
+          $scraped[] = ['label' => $label . ' (archive)', 'rows' => $regularRows];
+          $scraped[] = ['label' => $label . ' (torrent)', 'rows' => $torrentRows];
+        } else {
+          $scraped[] = ['label' => $label, 'rows' => $parsed];
+        }
+        $dbgLabel = $label . ($usedPassword ? ' [PW]' : '');
+        
+        // Compter les liens dans le HTML pour debug
+        $linkCount = 0;
+        $tableCount = 0;
+        if ($html !== '') {
+          $linkCount = substr_count(strtolower($html), '<a ');
+          $tableCount = substr_count(strtolower($html), '<table');
+        }
+        
+        // Extract error_log content for this parse attempt
+        $logFile = __DIR__ . '/assets/debug.log';
+        $recentLog = '';
+        if (is_file($logFile)) {
+          $logLines = @file($logFile);
+          if ($logLines) {
+            // Get last 5 lines that contain "parse_archiveorg_table"
+            $relevantLines = array_filter($logLines, function($line) {
+              return stripos($line, 'parse_archiveorg_table') !== false || stripos($line, 'parse_auto') !== false;
+            });
+            $recentLog = implode('', array_slice($relevantLines, -5));
+          }
+        }
+        
+        $debugHtmls[] = [
+          'label' => $dbgLabel,
+          'status' => (int)($resp['status'] ?? 0),
+          'error' => (string)($resp['error'] ?? ''),
+          'effective_url' => (string)($resp['effective_url'] ?? ''),
+          'parsed_count' => count($parsed),
+          'link_count' => $linkCount,
+          'table_count' => $tableCount,
+          'password_debug' => (string)($resp['debug_password_form'] ?? ''),
+          'cookies' => $scrapeCookies !== '' ? 'provided' : '',
+          'valid_extensions_count' => count($validExtensions),
+          'extensions_sample' => implode(', ', array_slice($validExtensions, 0, 20)),
+          'parse_debug' => $parseDebugInfo,
+          'raw_sample' => $rawSample,
+          'error_log' => $recentLog,
+          'html' => substr($html, 0, 8000) // Augmenté pour mieux diagnostiquer 1fichier
+        ];
+      }
+      $_SESSION['last_scrape'] = group_vimm_results($scraped);
+      $message = 'Scraping terminé.';
+      // Toujours afficher un bloc Debug dans ce mode pour faciliter le diagnostic
+      $message .= '<details><summary>Debug HTML</summary>';
+      if (empty($debugHtmls)) {
+        $message .= '<div class="text-muted">Aucun élément à diagnostiquer (aucune entrée reconnue).</div>';
+      } else {
+        foreach ($debugHtmls as $dbg) {
+          $message .= '<div style="margin-bottom:6px"><b>' . htmlspecialchars($dbg['label']) . '</b>';
+          if (!empty($dbg['effective_url'])) { $message .= ' <small class="text-muted">(' . htmlspecialchars($dbg['effective_url']) . ')</small>'; }
+          $message .= '<br><small>HTTP ' . htmlspecialchars((string)$dbg['status']) . (!empty($dbg['error']) ? (' — ' . htmlspecialchars($dbg['error'])) : '') . '</small>';
+          $message .= '<br><small class="text-info">Parsed: ' . (int)($dbg['parsed_count'] ?? 0) . ' fichiers | Links: ' . (int)($dbg['link_count'] ?? 0) . ' | Tables: ' . (int)($dbg['table_count'] ?? 0);
+          if (!empty($dbg['password_debug'])) { $message .= ' | Password: <span class="text-warning">' . htmlspecialchars($dbg['password_debug']) . '</span>'; }
+          if (!empty($dbg['cookies'])) { $message .= ' | Cookies: <span class="text-info">' . htmlspecialchars($dbg['cookies']) . '</span>'; }
+          if (!empty($dbg['valid_extensions_count'])) { 
+            $message .= '<br>Valid extensions: ' . $dbg['valid_extensions_count'] . ' (' . htmlspecialchars($dbg['extensions_sample']) . '...)'; 
+          }
+          if (!empty($dbg['parse_debug'])) {
+            $message .= '<br><span class="text-warning">Parser debug:</span><pre style="font-size:10px;background:#333;color:#0f0;padding:4px;margin:2px 0;">' . htmlspecialchars($dbg['parse_debug']) . '</pre>';
+          }
+          if (!empty($dbg['raw_sample'])) {
+            $message .= '<br><span class="text-info">Raw HTML sample around first file:</span><pre style="font-size:10px;background:#333;color:#0ff;padding:4px;margin:2px 0;max-height:150px;overflow:auto;">' . htmlspecialchars($dbg['raw_sample']) . '</pre>';
+          }
+          if (!empty($dbg['error_log'])) {
+            $message .= '<br><span class="text-warning">Error log:</span><pre style="font-size:10px;background:#333;color:#ff0;padding:4px;margin:2px 0;">' . htmlspecialchars($dbg['error_log']) . '</pre>';
+          }
+          $message .= '</small>';
+          $message .= '<details><summary style="font-size:11px;cursor:pointer;">Voir extrait HTML</summary>';
+          $message .= '<pre style="max-height:200px;overflow:auto;font-size:11px;background:#222;color:#eee;">' . htmlspecialchars($dbg['html']) . '</pre></details></div>';
+        }
+      }
+      $message .= '</details>';
+      break;
+
+    case 'attach_scrape_to_platform':
+      $platform_name_post = trim($_POST['platform_name'] ?? '');
+      $platform_file = trim($_POST['platform_file'] ?? '');
+      $attachMode = trim((string)($_POST['attach_mode'] ?? 'append'));
+      $selectedPlatformImage = store_uploaded_session_image('platform_image_file');
+      if ($selectedPlatformImage === '') {
+        $selectedPlatformImage = get_selected_session_image_name('platform_image_existing');
+      }
+      if ($platform_file === '' && $platform_name_post !== '') { $platform_file = build_platform_file_name($platform_name_post); }
+      $scrape_index = (int)($_POST['scrape_index'] ?? -1);
+      if ($platform_file === '' || $scrape_index < 0) { $error = t('err.missing_params'); break; }
+      $batFolder = trim($_POST['batocera_folder'] ?? '');
+      $items = $_SESSION['last_scrape'][$scrape_index]['rows'] ?? [];
+      if (!is_array($items)) $items = [];
+      $selectedExtensions = null;
+      if (($_POST['scrape_extensions_filter_active'] ?? '0') === '1') {
+        $selectedExtensions = array_filter(array_map('trim', explode(',', (string)($_POST['scrape_selected_extensions'] ?? ''))), static function($ext) {
+          return $ext !== '';
+        });
+      }
+      $items = filter_scrape_rows_by_extensions($items, $selectedExtensions);
+      // Append to existing and deduplicate by name+url (case-insensitive)
+      $existing = $attachMode === 'replace' ? [] : ($_SESSION['platform_games'][$platform_file] ?? []);
+      $merged = array_merge(is_array($existing)?$existing:[], $items);
+      $seen = [];
+      $unique = [];
+      foreach ($merged as $r) {
+        $n = (string)($r[0] ?? '');
+        $u = (string)($r[1] ?? '');
+        $s = (string)($r[2] ?? '');
+        $k = strtolower($n) . '|' . strtolower($u);
+        if (isset($seen[$k])) continue;
+        $seen[$k] = 1;
+        $unique[] = [$n,$u,$s];
+      }
+      $_SESSION['platform_games'][$platform_file] = $unique;
+      // Also attach/create an entry in systems_list using the provided name (without extension)
+      $base = $platform_name_post !== '' ? $platform_name_post : pathinfo($platform_file, PATHINFO_FILENAME);
+      $platformName = trim($base);
+      if ($platformName !== '') {
+        $existsIdx = -1;
+        foreach ($_SESSION['systems_list'] as $i => $sys) {
+          $pn = (string)($sys['platform_name'] ?? '');
+          if (strcasecmp($pn, $platformName) === 0) { $existsIdx = $i; break; }
+        }
+        if ($existsIdx === -1) {
+          $folder = $batFolder !== '' ? $batFolder : slugify_folder($platformName);
+          $_SESSION['systems_list'][] = [
+            'platform_name' => $platformName,
+            'folder' => $folder,
+              'platform_image' => $selectedPlatformImage !== '' ? $selectedPlatformImage : ($platformName . '.png')
+          ];
+        }
+      }
+  $message = sprintf($attachMode === 'replace' ? t('msg.games.replaced','Jeux remplacés pour %s') : t('msg.games.attached'), h($platform_file)) . ($platformName ? sprintf(t('misc.attached_system_added'), h($platformName)) : '');
+      break;
+
+    case 'attach_all_scrapes_to_platform':
+      $platform_name_post = trim($_POST['platform_name'] ?? '');
+      $platform_file = trim($_POST['platform_file'] ?? '');
+      $attachMode = trim((string)($_POST['attach_mode'] ?? 'append'));
+      $selectedPlatformImage = store_uploaded_session_image('platform_image_file');
+      if ($selectedPlatformImage === '') {
+        $selectedPlatformImage = get_selected_session_image_name('platform_image_existing');
+      }
+      if ($platform_file === '' && $platform_name_post !== '') { $platform_file = build_platform_file_name($platform_name_post); }
+      $batFolder = trim($_POST['batocera_folder'] ?? '');
+      if ($platform_file === '') { $error = t('err.missing_params'); break; }
+      $selectedExtensions = null;
+      if (($_POST['scrape_extensions_filter_active'] ?? '0') === '1') {
+        $selectedExtensions = array_filter(array_map('trim', explode(',', (string)($_POST['scrape_selected_extensions'] ?? ''))), static function($ext) {
+          return $ext !== '';
+        });
+      }
+      $all = $_SESSION['last_scrape'] ?? [];
+      $items = [];
+      if (is_array($all)) {
+        foreach ($all as $entry) {
+          if (!empty($entry['rows']) && is_array($entry['rows'])) {
+            $items = array_merge($items, filter_scrape_rows_by_extensions($entry['rows'], $selectedExtensions));
+          }
+        }
+      }
+      // Append to existing and deduplicate
+      $existing = $attachMode === 'replace' ? [] : ($_SESSION['platform_games'][$platform_file] ?? []);
+      $merged = array_merge(is_array($existing)?$existing:[], $items);
+      $seen = [];
+      $unique = [];
+      foreach ($merged as $r) {
+        $n = (string)($r[0] ?? '');
+        $u = (string)($r[1] ?? '');
+        $s = (string)($r[2] ?? '');
+        $k = strtolower($n) . '|' . strtolower($u);
+        if (isset($seen[$k])) continue;
+        $seen[$k] = 1;
+        $unique[] = [$n,$u,$s];
+      }
+      $_SESSION['platform_games'][$platform_file] = $unique;
+      // Ensure systems_list has an entry for this platform
+      $base = $platform_name_post !== '' ? $platform_name_post : pathinfo($platform_file, PATHINFO_FILENAME);
+      $platformName = trim($base);
+      if ($platformName !== '') {
+        $existsIdx = -1;
+        foreach ($_SESSION['systems_list'] as $i => $sys) {
+          $pn = (string)($sys['platform_name'] ?? '');
+          if (strcasecmp($pn, $platformName) === 0) { $existsIdx = $i; break; }
+        }
+        if ($existsIdx === -1) {
+          $folder = $batFolder !== '' ? $batFolder : slugify_folder($platformName);
+          $_SESSION['systems_list'][] = [
+            'platform_name' => $platformName,
+            'folder' => $folder,
+              'platform_image' => $selectedPlatformImage !== '' ? $selectedPlatformImage : ($platformName . '.png')
+          ];
+        }
+      }
+      $message = sprintf($attachMode === 'replace' ? t('msg.games.replaced','Jeux remplacés pour %s') : t('msg.games.attached'), h($platform_file)) . ($platformName ? sprintf(t('misc.attached_system_added'), h($platformName)) : '');
+      break;
+
+    // Systems list
+    case 'systems_new':
+  $_SESSION['systems_list'] = [];
+  $message = t('msg.systems.new');
+      break;
+    case 'systems_upload':
+      if (isset($_FILES['systems_file']) && $_FILES['systems_file']['error'] === UPLOAD_ERR_OK) {
+        $content = file_get_contents($_FILES['systems_file']['tmp_name']);
+        $arr = json_decode($content, true);
+        if (is_array($arr)) {
+          // Autopopulate platform_image by default when empty
+          foreach ($arr as $k => $sys) {
+            $pn = (string)($sys['platform_name'] ?? '');
+            $pi = (string)($sys['platform_image'] ?? '');
+            if ($pn !== '' && $pi === '') { $arr[$k]['platform_image'] = $pn . '.png'; }
+          }
+          $_SESSION['systems_list'] = $arr; $message = t('msg.systems.file_loaded');
+        }
+        else { $error = t('err.json_invalid'); }
+      } else { $error = t('err.upload_failed'); }
+      break;
+    case 'systems_add':
+      $pn = trim($_POST['platform_name'] ?? '');
+      $fd = trim($_POST['folder'] ?? '');
+      $pi = store_uploaded_session_image('platform_image_file');
+      if ($pi === '') {
+        $pi = get_selected_session_image_name('platform_image_existing');
+      }
+      if ($pn && $fd) {
+        if ($pi === '') { $pi = $pn . '.png'; }
+        $_SESSION['systems_list'][] = ['platform_name'=>$pn,'folder'=>$fd,'platform_image'=>$pi];
+        $message = t('msg.systems.added');
+      } else { $error = t('err.fields_required'); }
+      break;
+    case 'systems_update':
+      $idx = (int)($_POST['index'] ?? -1);
+      if ($idx >= 0 && isset($_SESSION['systems_list'][$idx])) {
+        $pn = trim($_POST['platform_name'] ?? '');
+        $fd = trim($_POST['folder'] ?? '');
+        // Keep existing image name by default when no new file is chosen
+        $existingPi = (string)($_SESSION['systems_list'][$idx]['platform_image'] ?? '');
+        $pi = store_uploaded_session_image('platform_image_file');
+        if ($pi === '') {
+          $selectedPi = get_selected_session_image_name('platform_image_existing');
+          $pi = $selectedPi !== '' ? $selectedPi : $existingPi;
+        }
+        if ($pi === '' && $pn !== '') { $pi = $pn . '.png'; }
+        $_SESSION['systems_list'][$idx] = [
+          'platform_name' => $pn,
+          'folder' => $fd,
+          'platform_image' => $pi,
+        ];
+        $message = t('msg.systems.updated');
+      } else { $error = t('err.index_invalid'); }
+      break;
+    
+    case 'systems_update_with_rename':
+      $idx = (int)($_POST['index'] ?? -1);
+      if ($idx >= 0 && isset($_SESSION['systems_list'][$idx])) {
+        $pn = trim($_POST['platform_name'] ?? '');
+        $fd = trim($_POST['folder'] ?? '');
+        $oldPlatformName = trim($_POST['old_platform_name'] ?? '');
+        
+        // Gestion du changement de nom de fichier
+        if ($oldPlatformName !== '' && $pn !== '' && $oldPlatformName !== $pn) {
+          $oldFile = $oldPlatformName . '.json';
+          $newFile = $pn . '.json';
+          
+          // Si le fichier existe dans les jeux, le renommer
+          if (isset($_SESSION['platform_games'][$oldFile])) {
+            $_SESSION['platform_games'][$newFile] = $_SESSION['platform_games'][$oldFile];
+            unset($_SESSION['platform_games'][$oldFile]);
+          }
+        }
+        
+        // Keep existing image name by default when no new file is chosen
+        $existingPi = (string)($_SESSION['systems_list'][$idx]['platform_image'] ?? '');
+        $pi = store_uploaded_session_image('platform_image_file');
+        if ($pi === '') {
+          $selectedPi = get_selected_session_image_name('platform_image_existing');
+          $pi = $selectedPi !== '' ? $selectedPi : $existingPi;
+        }
+        if ($pi === '' && $pn !== '') { $pi = $pn . '.png'; }
+        $_SESSION['systems_list'][$idx] = [
+          'platform_name' => $pn,
+          'folder' => $fd,
+          'platform_image' => $pi,
+        ];
+        $message = t('msg.systems.updated') . ($oldPlatformName !== $pn && $oldPlatformName !== '' ? ' (Fichier renommé)' : '');
+      } else { $error = t('err.index_invalid'); }
+      break;
+      
+    case 'platform_delete_complete':
+      $idx = (int)($_POST['platform_index'] ?? -1);
+      $platformFile = trim($_POST['platform_file'] ?? '');
+      if ($idx >= 0 && isset($_SESSION['systems_list'][$idx]) && $platformFile !== '') {
+        // Supprimer de la liste des systèmes
+        array_splice($_SESSION['systems_list'], $idx, 1);
+        // Supprimer le fichier de jeux associé
+        if (isset($_SESSION['platform_games'][$platformFile])) {
+          unset($_SESSION['platform_games'][$platformFile]);
+        }
+        $message = 'Plateforme et ses jeux supprimés avec succès.';
+      } else { $error = t('err.index_invalid'); }
+      break;
+      
+    case 'systems_delete':
+      $idx = (int)($_POST['index'] ?? -1);
+  if ($idx >= 0 && isset($_SESSION['systems_list'][$idx])) { array_splice($_SESSION['systems_list'],$idx,1); $message=t('msg.systems.deleted'); }
+      break;
+    case 'systems_download':
+      $json = json_encode(array_values($_SESSION['systems_list']), JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+      rgsx_debug_log('action.finish', [
+        'action' => 'systems_download',
+        'status' => 'ok',
+        'bytes' => strlen((string)$json),
+        'systems_count' => count($_SESSION['systems_list'] ?? []),
+      ]);
+      header('Content-Type: application/json');
+      header('Content-Disposition: attachment; filename="systems_list.json"');
+      echo $json; exit;
+
+    // Platform games editor
+    case 'games_upload':
+      if (isset($_FILES['platform_json'])) {
+        $files = $_FILES['platform_json'];
+        $isMultiple = is_array($files['name']);
+        $count = $isMultiple ? count($files['name']) : 1;
+  $loaded = 0; $failed = 0;
+        $loadedNames = [];
+        $failedDetails = [];
+
+        $errMsg = function($code) {
+          switch ($code) {
+            case UPLOAD_ERR_INI_SIZE:
+            case UPLOAD_ERR_FORM_SIZE: return 'Fichier trop volumineux (limites serveur).';
+            case UPLOAD_ERR_PARTIAL: return 'Transfert interrompu (partiel).';
+            case UPLOAD_ERR_NO_FILE: return t('err.file_not_selected');
+            case UPLOAD_ERR_NO_TMP_DIR: return 'Dossier temporaire manquant sur le serveur.';
+            case UPLOAD_ERR_CANT_WRITE: return 'Impossible d\'écrire sur le disque.';
+            case UPLOAD_ERR_EXTENSION: return 'Transfert bloqué par une extension PHP.';
+          }
+          return 'Erreur inconnue.';
+        };
+
+        // Server-side cap to 20 files per selection (encourage ZIP for large batches)
+        $serverCap = 20;
+        if ($count > $serverCap) {
+          $error = sprintf(t('err.too_many_files'), $count, $serverCap);
+          $count = $serverCap;
+        }
+
+        for ($i=0; $i<$count; $i++) {
+          $err = $isMultiple ? ($files['error'][$i] ?? UPLOAD_ERR_NO_FILE) : ($files['error'] ?? UPLOAD_ERR_NO_FILE);
+          $name = $isMultiple ? ($files['name'][$i] ?? 'platform.json') : ($files['name'] ?? 'platform.json');
+          $tmp  = $isMultiple ? ($files['tmp_name'][$i] ?? '') : ($files['tmp_name'] ?? '');
+
+          if ($err !== UPLOAD_ERR_OK) {
+            $failed++; $failedDetails[] = [$name, $errMsg($err)]; continue;
+          }
+          if (!$tmp || !is_readable($tmp)) {
+            $failed++; $failedDetails[] = [$name, t('err.temp_file_missing')]; continue;
+          }
+
+          $lower = strtolower($name);
+          if (substr($lower, -4) === '.zip') {
+            // Handle a zip: iterate entries and import any .json files
+            if (!class_exists('ZipArchive')) {
+              $failed++; $failedDetails[] = [$name, 'Support ZIP indisponible (extension ZipArchive manquante).'];
+            } else {
+              $za = new ZipArchive();
+              if ($za->open($tmp) === true) {
+              for ($zi=0; $zi<$za->numFiles; $zi++) {
+                $zname = $za->getNameIndex($zi);
+                if (!$zname || substr(strtolower($zname), -5) !== '.json' ) continue;
+                $data = $za->getFromIndex($zi);
+                if ($data === false) { $failed++; $failedDetails[] = [$zname, 'Lecture ZIP échouée.']; continue; }
+                $arr = json_decode($data, true);
+                if (is_array($arr)) {
+                  $baseOrig = basename(strtr($zname, '\\', '/'));
+                  $_SESSION['platform_games'][$baseOrig] = $arr; $loaded++; $loadedNames[] = $baseOrig;
+                } else {
+                  $failed++; $failedDetails[] = [$zname, t('err.json_invalid')];
+                }
+              }
+                $za->close();
+              } else {
+                $failed++; $failedDetails[] = [$name, 'ZIP illisible.'];
+              }
+            }
+          } else {
+            $content = @file_get_contents($tmp);
+            $arr = json_decode($content, true);
+            if (is_array($arr)) {
+              $_SESSION['platform_games'][$name] = $arr; $loaded++; $loadedNames[] = $name;
+            } else {
+              $failed++; $failedDetails[] = [$name, t('err.json_invalid_or_not_array')];
+            }
+          }
+        }
+
+        if ($loaded > 0) {
+          $preview = implode(', ', array_slice($loadedNames, 0, 5));
+          $more = $loaded > 5 ? (' +'.($loaded-5).' autre(s)') : '';
+          $message = 'Plateforme(s) chargée(s): ' . $loaded . ($preview ? (' ['.$preview.$more.']') : '');
+        }
+        if ($failed > 0) {
+          $parts = [];
+          foreach ($failedDetails as $fd) { $parts[] = $fd[0] . ' (' . $fd[1] . ')'; }
+          $error = 'Échec(s): ' . $failed . ' — ' . implode('; ', array_slice($parts, 0, 6)) . (count($parts)>6 ? ' ...' : '');
+        }
+
+        // Warn if selection size likely exceeded PHP max_file_uploads
+        $maxUploads = (int)ini_get('max_file_uploads');
+        if ($isMultiple && $maxUploads > 0 && $count >= $maxUploads) {
+          $warn = sprintf(t('warn.maybe_truncated'), $maxUploads);
+          $message = $message ? ($message . ' — ' . $warn) : $warn;
+        }
+  } else { $error = t('err.upload_failed'); }
+      break;
+    case 'games_add_row':
+      $file = $_POST['games_file'] ?? '';
+      $fname = trim($_POST['game_name'] ?? '');
+      $furl = trim($_POST['game_url'] ?? '');
+      $fsize = trim($_POST['game_size'] ?? '');
+      if ($file && isset($_SESSION['platform_games'][$file])) {
+        $_SESSION['platform_games'][$file][] = [$fname,$furl,$fsize];
+        $message = t('msg.games.row_added');
+      } else { $error = t('err.select_valid_platform_file'); }
+      break;
+    case 'games_update_row':
+      $file = $_POST['games_file'] ?? '';
+      $idx = (int)($_POST['row_index'] ?? -1);
+      $fname = trim($_POST['game_name'] ?? '');
+      $furl = trim($_POST['game_url'] ?? '');
+      $fsize = trim($_POST['game_size'] ?? '');
+      if ($file && isset($_SESSION['platform_games'][$file]) && $idx >= 0 && isset($_SESSION['platform_games'][$file][$idx])) {
+        $_SESSION['platform_games'][$file][$idx] = [$fname,$furl,$fsize];
+        $message = t('msg.games.row_updated');
+      } else { $error = t('err.cannot_update_row'); }
+      break;
+    case 'games_delete_row':
+      $file = $_POST['games_file'] ?? '';
+      $idx = (int)($_POST['row_index'] ?? -1);
+      if ($file && isset($_SESSION['platform_games'][$file]) && $idx>=0 && isset($_SESSION['platform_games'][$file][$idx])) {
+        array_splice($_SESSION['platform_games'][$file], $idx, 1);
+  $message = t('msg.games.row_deleted');
+      }
+      break;
+    case 'games_download_one':
+      $file = $_POST['games_file'] ?? '';
+      if ($file && isset($_SESSION['platform_games'][$file])) {
+        $json = json_encode($_SESSION['platform_games'][$file], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+        rgsx_debug_log('action.finish', [
+          'action' => 'games_download_one',
+          'status' => 'ok',
+          'games_file' => basename((string)$file),
+          'rows_count' => count($_SESSION['platform_games'][$file] ?? []),
+          'bytes' => strlen((string)$json),
+        ]);
+        header('Content-Type: application/json');
+        header('Content-Disposition: attachment; filename="'.basename($file).'"');
+        echo $json; exit;
+  } else { $error = t('err.file_not_selected'); }
+      break;
+
+    case 'games_delete_file':
+      $file = $_POST['games_file'] ?? '';
+      if ($file && isset($_SESSION['platform_games'][$file])) {
+        unset($_SESSION['platform_games'][$file]);
+        $message = sprintf(t('msg.games.platform_deleted'), h($file));
+      } else {
+        $error = t('err.platform_file_missing');
+      }
+      break;
+    case 'games_clear_all':
+      $_SESSION['platform_games'] = [];
+      $message = t('msg.games.all_cleared');
+      break;
+      
+    case 'games_clear_platform':
+      $file = $_POST['games_file'] ?? '';
+      if ($file && isset($_SESSION['platform_games'][$file])) {
+        $_SESSION['platform_games'][$file] = [];
+        $message = sprintf(t('msg.games.platform_cleared'), h($file));
+      } else {
+        $error = t('err.file_not_selected');
+      }
+      break;
+
+    // Images (kept for compatibility, UI removed)
+    case 'images_upload':
+      if (!empty($_FILES['images']['name'][0])) {
+        $count = count($_FILES['images']['name']);
+        $added = 0;
+        for ($i=0; $i<$count; $i++) {
+          if ($_FILES['images']['error'][$i] === UPLOAD_ERR_OK) {
+            $orig = $_FILES['images']['name'][$i];
+            $tmp  = $_FILES['images']['tmp_name'][$i];
+            $typ  = $_FILES['images']['type'][$i];
+            $stored = persist_upload_to_session_dir($tmp, $orig);
+            if ($stored) {
+              $_SESSION['images'][] = ['name' => basename($stored), 'tmp' => $stored, 'type' => $typ];
+              $added++;
+            }
+          }
+        }
+        $message = $added > 0 ? ("Images ajoutées: $added") : '';
+      }
+      break;
+    case 'images_clear':
+      $_SESSION['images'] = [];
+      $message = 'Images supprimées.';
+      break;
+
+    // Package ZIP
+    case 'build_zip':
+      $systemsData = array_values($_SESSION['systems_list'] ?? []);
+      $platformGamesData = $_SESSION['platform_games'] ?? [];
+      $imagesData = $_SESSION['images'] ?? [];
+      $progressKey = trim((string)($_POST['zip_progress_key'] ?? ''));
+      $skipCache = !empty($_POST['skip_cache']);
+      if ($progressKey === '') { $progressKey = session_id(); }
+      rgsx_debug_log('build_zip.start', [
+        'action' => 'build_zip',
+        'progress_key' => $progressKey,
+        'systems_count' => count($systemsData),
+        'platform_files_count' => count($platformGamesData),
+        'images_count' => count($imagesData),
+      ]);
+      session_write_close();
+
+      rgsx_zip_progress_clear($progressKey);
+      rgsx_zip_progress_write('preparing', t('zip.preparing_data', 'Preparing package data...'), 5, [], $progressKey);
+
+      $zip = new ZipArchive();
+      $tmpZip = tempnam(sys_get_temp_dir(), 'rgsx_zip_');
+      $cacheBuild = null;
+      if ($zip->open($tmpZip, ZipArchive::OVERWRITE) !== true) {
+        rgsx_zip_progress_write('error', t('err.zip_create_failed', 'Unable to create ZIP.'), 100, [], $progressKey);
+        $error = t('err.zip_create_failed', 'Unable to create ZIP.');
+        break;
+      }
+      // systems_list.json
+      $systemsJson = json_encode($systemsData, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+      $zip->addFromString('systems_list.json', $systemsJson);
+      rgsx_zip_progress_write('systems', t('zip.add_systems', 'Adding systems_list.json...'), 12, [], $progressKey);
+      // games/
+      $gamesTotal = max(1, count($platformGamesData));
+      $gamesIndex = 0;
+      foreach ($platformGamesData as $fname => $rows) {
+        $gamesIndex++;
+        $json = json_encode($rows, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+        $filename = basename($fname);
+        // Ensure .json extension
+        if (substr($filename, -5) !== '.json') {
+          $filename .= '.json';
+        }
+        $zip->addFromString('games/'.$filename, $json);
+        $gamesPercent = 12 + (int)floor(($gamesIndex / $gamesTotal) * 48);
+        rgsx_zip_progress_write('games', t('zip.add_games', 'Adding game lists...'), $gamesPercent, [
+          'detail' => $filename . ' (' . $gamesIndex . '/' . $gamesTotal . ')',
+        ], $progressKey);
+      }
+      // images/
+      $imagesTotal = max(1, count($imagesData));
+      $imagesIndex = 0;
+      foreach ($imagesData as $img) {
+        $imagesIndex++;
+        $zip->addFile($img['tmp'], 'images/'.basename($img['name']));
+        $imagesPercent = 60 + (int)floor(($imagesIndex / $imagesTotal) * 10);
+        rgsx_zip_progress_write('images', t('zip.add_images', 'Adding images...'), $imagesPercent, [
+          'detail' => basename((string)($img['name'] ?? '')) . ' (' . $imagesIndex . '/' . $imagesTotal . ')',
+        ], $progressKey);
+      }
+      rgsx_zip_progress_write('finalizing', t('zip.finalizing', 'Finalizing ZIP archive...'), 92, [], $progressKey);
+      $zip->close();
+      rgsx_zip_progress_write('downloading', t('zip.ready_transfer', 'ZIP ready, sending to browser...'), 100, [], $progressKey);
+      $zipSize = @filesize($tmpZip);
+      rgsx_debug_log('build_zip.finish', [
+        'action' => 'build_zip',
+        'progress_key' => $progressKey,
+        'status' => 'ok',
+        'zip_size' => $zipSize,
+        'systems_count' => count($systemsData),
+        'platform_files_count' => count($platformGamesData),
+        'images_count' => count($imagesData),
+      ]);
+      header('Content-Type: application/zip');
+      header('Content-Disposition: attachment; filename="games.zip"');
+      header('Content-Length: '.$zipSize);
+      readfile($tmpZip);
+      if (is_array($cacheBuild) && !empty($cacheBuild['temp_root'])) { remove_tree((string)$cacheBuild['temp_root']); }
+      rgsx_zip_progress_clear($progressKey);
+      @unlink($tmpZip);
+      exit;
+  }
+} catch (Throwable $e) {
+    $error = 'Erreur: ' . $e->getMessage();
+    rgsx_debug_log('action.exception', [
+      'action' => $action,
+      'error' => $e->getMessage(),
+      'file' => $e->getFile(),
+      'line' => $e->getLine(),
+    ]);
+}
+
+if ($action !== '') {
+  try {
+    rgsx_catalog_db_sync_after_action(
+      (string)$action,
+      is_array($_POST) ? $_POST : [],
+      is_array($_SESSION['systems_list'] ?? null) ? $_SESSION['systems_list'] : [],
+      is_array($_SESSION['platform_games'] ?? null) ? $_SESSION['platform_games'] : []
+    );
+  } catch (Throwable $databaseException) {
+    $error = $error !== '' ? $error . ' ' : '';
+    $error .= 'MariaDB: ' . $databaseException->getMessage();
+    rgsx_debug_log('catalog.sync_failed', ['action' => $action, 'error' => $databaseException->getMessage()]);
+  }
+  rgsx_debug_log('action.finish', [
+    'action' => $action,
+    'status' => $error !== '' ? 'error' : 'ok',
+    'message' => $message,
+    'error' => $error,
+    'active_tab' => $activeTab,
+    'systems_count' => count($_SESSION['systems_list'] ?? []),
+    'platform_files_count' => count($_SESSION['platform_games'] ?? []),
+    'images_count' => count($_SESSION['images'] ?? []),
+  ]);
+}
+
+// Persist active tab in session for next render
+$_SESSION['active_tab'] = $activeTab;
+
+// Persist pagination states
+$systemsPage = (int)($_POST['systems_page'] ?? $_GET['systems_page'] ?? $_SESSION['systems_page'] ?? 1);
+// Gestion du nombre d'éléments par page (plateformes)
+$allowedPerPage = [10,20,25,50,100,200];
+$systemsPerPage = (int)($_POST['systems_per_page'] ?? $_GET['systems_per_page'] ?? $_SESSION['systems_per_page'] ?? 200);
+if (!in_array($systemsPerPage, $allowedPerPage, true)) { $systemsPerPage = 200; }
+// Gestion du tri
+$allowedSortOrders = ['original', 'alphabetical'];
+$systemsSortOrder = ($_POST['systems_sort_order'] ?? $_GET['systems_sort_order'] ?? $_SESSION['systems_sort_order'] ?? 'original');
+if (!in_array($systemsSortOrder, $allowedSortOrders, true)) { $systemsSortOrder = 'original'; }
+$_SESSION['systems_per_page'] = $systemsPerPage;
+$_SESSION['systems_page'] = $systemsPage;
+$_SESSION['systems_sort_order'] = $systemsSortOrder;
+
+// -------------- View -------------------------------
+function h($s){ return htmlspecialchars((string)$s, ENT_QUOTES|ENT_SUBSTITUTE, 'UTF-8'); }
+$scraped = $_SESSION['last_scrape'] ?? [];
+$systems = $_SESSION['systems_list'];
+
+// Apply sorting
+if ($systemsSortOrder === 'alphabetical') {
+  $systems = $systems; // Make a copy for sorting
+  usort($systems, function($a, $b) {
+    $nameA = strtolower($a['platform_name'] ?? '');
+    $nameB = strtolower($b['platform_name'] ?? '');
+    return strcmp($nameA, $nameB);
+  });
+  // Update the session with sorted systems to maintain order in JSON export
+  $_SESSION['systems_list'] = $systems;
+}
+
+$systemsTotal = count($systems);
+$systemsPages = max(1, (int)ceil($systemsTotal / $systemsPerPage));
+$systemsPage = max(1, min($systemsPage, $systemsPages));
+$systemsOffset = ($systemsPage - 1) * $systemsPerPage;
+$systemsPaginated = array_slice($systems, $systemsOffset, $systemsPerPage);
+$gamesMap = $_SESSION['platform_games'];
+// Debug temporaire
+if (empty($gamesMap)) {
+  $message = t('msg.no_loaded_sources_games', 'No loaded sources or games.');
+}
+$images = $_SESSION['images'];
+$imagesByName = [];
+foreach ($images as $im) { if (!empty($im['name'])) { $imagesByName[$im['name']] = true; } }
+$availableImageNames = array_keys($imagesByName);
+natcasesort($availableImageNames);
+$availableImageNames = array_values($availableImageNames);
+$showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' && $error !== '';
+?>
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RGSX Sources Manager</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="icon" type="image/x-icon" href="assets/favicon_rgsx.ico">
+  <style>
+    body { padding-bottom: 40px; }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+    pre { background:#0f1722; color:#cfe1f0; padding:12px; border-radius:8px; max-height: 360px; overflow:auto; }
+    .small-muted { font-size: 12px; color:#6c757d; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid #dee2e6; border-radius:999px; font-size:12px; }
+    .platform-form-grid { display: grid; gap: 16px; }
+    .platform-form-panel { min-width: 0; }
+    .platform-form-stack { display: flex; flex-direction: column; gap: 10px; }
+    .platform-form-stack .form-control,
+    .platform-form-stack .form-select { width: 100%; }
+    .platform-form-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+    .platform-form-actions .btn { min-width: 180px; }
+    .systems-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .scrape-target-card { border: 1px solid #dee2e6; border-radius: 12px; padding: 16px; margin-bottom: 18px; background: #fff; }
+    .scrape-target-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .scrape-target-title { font-size: 1.05rem; font-weight: 600; margin: 0; }
+    .scrape-target-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .scrape-source-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+    .scrape-source-details { font-size: 12px; color: #6c757d; }
+    @media (min-width: 1200px) {
+      .platform-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (min-width: 1920px) {
+      .platform-form-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    .loading-overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 2000; background: rgba(12, 14, 20, 0.45); backdrop-filter: blur(4px); }
+    .loading-overlay.active { display: flex; }
+    .loading-box { display:flex; flex-direction:column; align-items:center; gap:10px; color:#e9eef6; }
+    .loading-progress-wrap { width: min(360px, 72vw); }
+    .loading-progress-bar { width: 100%; height: 10px; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,0.18); }
+    .loading-progress-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #79c2ff 0%, #78f0c8 100%); transition: width 0.25s ease; }
+    .loading-progress-value { text-align: center; font-size: 12px; color: rgba(255,255,255,0.85); }
+  </style>
+  <script>
+    // Base URL for local requests
+    const baseUrl = '<?php echo addslashes($baseUrl); ?>';
+    const uiText = <?php echo json_encode([
+      'zipReadyTitle' => t('zip.ready_title', 'ZIP ready'),
+      'zipReadyMessage' => t('zip.ready_message', 'The file is ready. If the download does not start, use the button below.'),
+      'zipReadySuccess' => t('zip.ready_success', 'Archive generated successfully.'),
+      'zipDefaultFile' => t('zip.default_filename', 'games.zip'),
+      'selectGeneric' => t('placeholder.select_generic', 'Select...'),
+      'gamesLoadError' => t('err.games_loading', 'Loading error:'),
+      'zipStatePreparing' => t('zip.state_preparing_title', 'Preparing ZIP...'),
+      'zipStateSystems' => t('zip.state_systems_title', 'Adding systems...'),
+      'zipStateGames' => t('zip.state_games_title', 'Adding game lists...'),
+      'zipStateImages' => t('zip.state_images_title', 'Adding images...'),
+      'zipStateCache' => t('zip.state_cache_title', 'Generating caches...'),
+      'zipStateFinalizing' => t('zip.state_finalizing_title', 'Finalizing ZIP...'),
+      'zipStateDownloading' => t('zip.state_downloading_title', 'Download ready...'),
+      'zipStateError' => t('zip.state_error_title', 'Generation error'),
+      'zipStateDefault' => t('zip.state_default_title', 'Generating ZIP...'),
+      'overlayLoading' => t('overlay.loading', 'Loading…'),
+      'overlayProcessing' => t('overlay.processing', 'Processing…'),
+      'overlayZipGenerating' => t('overlay.zip_generating', 'Generating ZIP…'),
+      'overlayZipPreparing' => t('overlay.zip_preparing', 'Preparing files, generating caches and compressing.'),
+      'overlayJsonPreparing' => t('overlay.json_preparing', 'Preparing JSON…'),
+      'overlayJsonExporting' => t('overlay.json_exporting', 'Exporting system list.'),
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>;
+    
+    // Show image in modal
+    function showImageModal(imageName) {
+      const modal = new bootstrap.Modal(document.getElementById('imageModal'));
+      const img = document.getElementById('modalImage');
+      const loading = document.getElementById('imageLoading');
+      const error = document.getElementById('imageError');
+      const modalTitle = document.getElementById('imageModalLabel');
+      
+      // Reset state
+      img.style.display = 'none';
+      loading.classList.remove('d-none');
+      error.classList.add('d-none');
+      modalTitle.textContent = imageName;
+      
+      // Show modal
+      modal.show();
+      
+      // Load image
+      const imageUrl = baseUrl + '?preview_image=' + encodeURIComponent(imageName);
+      const tempImg = new Image();
+      tempImg.onload = function() {
+        img.src = imageUrl;
+        img.style.display = 'block';
+        loading.classList.add('d-none');
+      };
+      tempImg.onerror = function() {
+        loading.classList.add('d-none');
+        error.classList.remove('d-none');
+      };
+      tempImg.src = imageUrl;
+    }
+    
+
+
+    // Overlay helpers
+    let zipProgressPollHandle = null;
+    let currentZipProgressKey = '';
+    let zipProgressSeen = false;
+    let zipOverlayHideTimeout = null;
+    let zipDownloadInFlight = false;
+    let zipReadyBlobUrl = '';
+
+    function resetOverlayActions() {
+      const downloadButton = document.getElementById('loadingOverlayDownloadButton');
+      const closeButton = document.getElementById('loadingOverlayCloseButton');
+      if (downloadButton) {
+        downloadButton.classList.add('d-none');
+        downloadButton.removeAttribute('href');
+        downloadButton.removeAttribute('download');
+      }
+      if (closeButton) {
+        closeButton.classList.add('d-none');
+      }
+      if (zipReadyBlobUrl) {
+        URL.revokeObjectURL(zipReadyBlobUrl);
+        zipReadyBlobUrl = '';
+      }
+    }
+
+    function showOverlayDownloadReady(blobUrl, fileName) {
+      const titleNode = document.getElementById('loadingOverlayTitle');
+      const messageNode = document.getElementById('loadingOverlayMessage');
+      const detailNode = document.getElementById('loadingOverlayDetail');
+      const downloadButton = document.getElementById('loadingOverlayDownloadButton');
+      const closeButton = document.getElementById('loadingOverlayCloseButton');
+      if (titleNode) titleNode.textContent = uiText.zipReadyTitle;
+      if (messageNode) messageNode.textContent = uiText.zipReadyMessage;
+      if (detailNode) detailNode.textContent = fileName || uiText.zipDefaultFile;
+      if (downloadButton) {
+        downloadButton.href = blobUrl;
+        downloadButton.download = fileName || uiText.zipDefaultFile;
+        downloadButton.classList.remove('d-none');
+      }
+      if (closeButton) {
+        closeButton.classList.remove('d-none');
+      }
+      setOverlayProgress(100, uiText.zipReadySuccess);
+    }
+
+    function setOverlayProgress(percent, detail){
+      const bar = document.getElementById('loadingOverlayProgressBar');
+      const value = document.getElementById('loadingOverlayProgressValue');
+      const detailNode = document.getElementById('loadingOverlayDetail');
+      const safePercent = Math.max(0, Math.min(100, Number(percent || 0)));
+      if (bar) bar.style.width = safePercent + '%';
+      if (value) value.textContent = safePercent > 0 ? (safePercent + '%') : '';
+      if (detailNode) detailNode.textContent = detail || '';
+    }
+    function stopZipProgressPolling(){
+      if (zipProgressPollHandle) {
+        clearInterval(zipProgressPollHandle);
+        zipProgressPollHandle = null;
+      }
+      zipProgressSeen = false;
+      currentZipProgressKey = '';
+      if (zipOverlayHideTimeout) {
+        clearTimeout(zipOverlayHideTimeout);
+        zipOverlayHideTimeout = null;
+      }
+      zipDownloadInFlight = false;
+    }
+    async function pollZipProgress(){
+      try {
+        if (!currentZipProgressKey) return;
+        const response = await fetch(baseUrl + '?zip_progress=1&progress_key=' + encodeURIComponent(currentZipProgressKey) + '&_ts=' + Date.now(), { cache: 'no-store' });
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (payload && typeof payload === 'object') {
+          if (payload.state === 'idle') {
+            if (zipProgressSeen && !zipDownloadInFlight) {
+              hideOverlay();
+            }
+            return;
+          }
+          zipProgressSeen = true;
+          const titleNode = document.getElementById('loadingOverlayTitle');
+          const messageNode = document.getElementById('loadingOverlayMessage');
+          if (titleNode && payload.state) {
+            const titles = {
+              preparing: uiText.zipStatePreparing,
+              systems: uiText.zipStateSystems,
+              games: uiText.zipStateGames,
+              images: uiText.zipStateImages,
+              cache: uiText.zipStateCache,
+              finalizing: uiText.zipStateFinalizing,
+              downloading: uiText.zipStateDownloading,
+              error: uiText.zipStateError,
+            };
+            titleNode.textContent = titles[payload.state] || uiText.zipStateDefault;
+          }
+          if (messageNode && payload.message) {
+            messageNode.textContent = payload.message;
+          }
+          setOverlayProgress(payload.percent || 0, payload.detail || '');
+          if ((payload.state === 'downloading' || payload.state === 'error') && Number(payload.percent || 0) >= 100 && !zipDownloadInFlight) {
+            if (!zipOverlayHideTimeout) {
+              zipOverlayHideTimeout = setTimeout(() => {
+                hideOverlay();
+              }, 1200);
+            }
+          }
+        }
+      } catch (e) {}
+    }
+    function startZipProgressPolling(progressKey){
+      stopZipProgressPolling();
+      currentZipProgressKey = progressKey || '';
+      pollZipProgress();
+      zipProgressPollHandle = setInterval(pollZipProgress, 500);
+    }
+    function showOverlay(title, message){
+      const overlay = document.getElementById('loadingOverlay');
+      const titleNode = document.getElementById('loadingOverlayTitle');
+      const messageNode = document.getElementById('loadingOverlayMessage');
+      resetOverlayActions();
+      if (titleNode) titleNode.textContent = title || uiText.overlayLoading;
+      if (messageNode) messageNode.textContent = message || uiText.overlayProcessing;
+      setOverlayProgress(0, '');
+      if (overlay) overlay.classList.add('active');
+    }
+    function hideOverlay(){
+      stopZipProgressPolling();
+      const overlay = document.getElementById('loadingOverlay');
+      if (overlay) overlay.classList.remove('active');
+    }
+    function showOverlayAndSubmit(form){
+      if (!(form instanceof HTMLFormElement)) return;
+      showOverlay(uiText.overlayLoading, uiText.overlayProcessing);
+      // small delay to allow paint before navigation
+      setTimeout(() => { try { form.submit(); } catch(e){} }, 60);
+    }
+    function showDownloadOverlay(kind){
+      if (kind === 'zip') {
+        showOverlay(uiText.overlayZipGenerating, uiText.overlayZipPreparing);
+        return;
+      }
+      if (kind === 'systems') {
+        showOverlay(uiText.overlayJsonPreparing, uiText.overlayJsonExporting);
+        return;
+      }
+      showOverlay(uiText.overlayLoading, uiText.overlayProcessing);
+    }
+    function getDownloadFilename(response, fallbackName) {
+      try {
+        const disposition = response.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+        const raw = match ? (match[1] || match[2] || '') : '';
+        return raw ? decodeURIComponent(raw) : fallbackName;
+      } catch (e) {
+        return fallbackName;
+      }
+    }
+    async function submitBuildZipForm(skipCache) {
+      const buildZipForm = document.getElementById('buildZipForm');
+      if (!(buildZipForm instanceof HTMLFormElement) || zipDownloadInFlight) {
+        return false;
+      }
+      zipDownloadInFlight = true;
+      const tokenInput = buildZipForm.querySelector('input[name="zip_progress_key"]');
+      const activeTabInput = buildZipForm.querySelector('input[name="active_tab"]');
+      const skipCacheInput = document.getElementById('buildZipSkipCache');
+      const progressKey = 'zip_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+      if (tokenInput) tokenInput.value = progressKey;
+      if (activeTabInput) activeTabInput.value = 'tab-package';
+      if (skipCacheInput) skipCacheInput.value = skipCache ? '1' : '0';
+      showDownloadOverlay('zip');
+      startZipProgressPolling(progressKey);
+      try {
+        const response = await fetch(window.location.href, {
+          method: 'POST',
+          body: new FormData(buildZipForm),
+          credentials: 'same-origin',
+        });
+        if (!response.ok) {
+          throw new Error('HTTP ' + response.status);
+        }
+        const blob = await response.blob();
+        const fileName = getDownloadFilename(response, 'games.zip');
+        zipReadyBlobUrl = URL.createObjectURL(blob);
+        showOverlayDownloadReady(zipReadyBlobUrl, fileName);
+        const downloadButton = document.getElementById('loadingOverlayDownloadButton');
+        if (downloadButton) {
+          downloadButton.click();
+        }
+      } catch (error) {
+        const titleNode = document.getElementById('loadingOverlayTitle');
+        const messageNode = document.getElementById('loadingOverlayMessage');
+        if (titleNode) titleNode.textContent = 'Erreur de génération';
+        if (messageNode) messageNode.textContent = 'La génération du ZIP a échoué.';
+        setTimeout(() => {
+          hideOverlay();
+        }, 1800);
+      }
+      return false;
+    }
+  </script>
+  </head>
+<body class="container py-3">
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-box">
+      <div class="spinner-border text-light" role="status" aria-hidden="true"></div>
+      <div id="loadingOverlayTitle"><?php echo t('overlay.loading_title', 'Chargement…'); ?></div>
+      <div id="loadingOverlayMessage" class="small-muted text-light"><?php echo t('overlay.please_wait', 'Veuillez patienter.'); ?></div>
+      <div id="loadingOverlayDetail" class="small-muted text-light"></div>
+      <div class="loading-progress-wrap">
+        <div class="loading-progress-bar"><div id="loadingOverlayProgressBar" class="loading-progress-bar-fill"></div></div>
+        <div id="loadingOverlayProgressValue" class="loading-progress-value"></div>
+      </div>
+      <div class="d-flex justify-content-center gap-2 mt-3">
+        <a id="loadingOverlayDownloadButton" class="btn btn-success d-none" href="#"><?php echo t('overlay.download_zip', 'Télécharger le ZIP'); ?></a>
+        <button id="loadingOverlayCloseButton" type="button" class="btn btn-outline-light d-none" onclick="hideOverlay()"><?php echo t('btn.close', 'Fermer'); ?></button>
+      </div>
+    </div>
+  </div>
+  <iframe name="downloadFrame" id="downloadFrame" class="d-none" title="download frame"></iframe>
+  <h1 class="mb-3">RGSX Sources Manager</h1>
+  <p class="small-muted"><?php echo t('desc.main', 'Une seule page pour : scraper des jeux, éditer les plateformes et générer un ZIP (systems_list.json, images/, games/).'); ?></p>
+
+  <div class="d-flex justify-content-end mb-2">
+    <form method="get" class="d-inline">
+      <input type="hidden" name="active_tab" value="<?php echo h($activeTab); ?>">
+      <select name="lang" class="form-select form-select-sm" onchange="this.form.submit()" aria-label="Language selector">
+        <?php foreach ($availableLangs as $lc): ?>
+          <option value="<?php echo $lc; ?>" <?php echo $lc===$lang?'selected':''; ?>><?php echo strtoupper($lc); ?></option>
+        <?php endforeach; ?>
+      </select>
+    </form>
+  </div>
+
+  <div class="card p-3 mb-3">
+    <div class="d-flex flex-column flex-md-row gap-2 align-items-md-end">
+      <form method="post" enctype="multipart/form-data" class="d-flex flex-wrap gap-2 align-items-end w-100">
+        <input type="hidden" name="action" value="import_data_zip">
+        <input type="hidden" name="active_tab" value="<?php echo h($activeTab); ?>">
+        <div>
+          <label class="form-label"><?php echo t('scrape.import_label'); ?></label>
+          <input type="file" class="form-control mb-1" name="data_zip" accept=".zip,application/zip,application/x-zip-compressed" onchange="showOverlayAndSubmit(this.form)">
+          <input type="url" class="form-control" name="data_zip_url" id="data_zip_url" placeholder="https://monsite/games.zip">
+        </div>
+  <button class="btn btn-outline-primary" type="submit"><?php echo t('btn.load','Charger'); ?></button>
+  <button class="btn btn-outline-success ms-2" type="button" onclick="document.getElementById('data_zip_url').value='https://retrogamesets.fr/softs/games.zip';"><?php echo t('btn.use_official_base','Utiliser base RGSX officielle'); ?></button>
+  <div class="text-muted small ms-2"><?php echo t('scrape.expected_content'); ?></div>
+      </form>
+    </div>
+  </div>
+
+  <?php if ($message): ?><div class="alert alert-success"><?php echo $message; ?></div><?php endif; ?>
+  <?php if ($error): ?><div class="alert alert-danger"><?php echo h($error); ?></div><?php endif; ?>
+
+  <ul class="nav nav-tabs" id="tabs" role="tablist">
+    <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-scrape'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-scrape" type="button" role="tab" aria-selected="<?php echo $activeTab==='tab-scrape'?'true':'false'; ?>">1) <?php echo t('tab.scrape','Scraper'); ?></button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link <?php echo ($activeTab==='tab-systems' || $activeTab==='tab-games')?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-systems" type="button" role="tab" aria-selected="<?php echo ($activeTab==='tab-systems' || $activeTab==='tab-games')?'true':'false'; ?>">2) <?php echo t('tab.systems','Plateformes & Jeux'); ?></button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link <?php echo $activeTab==='tab-package'?'active':''; ?>" data-bs-toggle="tab" data-bs-target="#tab-package" type="button" role="tab" aria-selected="<?php echo $activeTab==='tab-package'?'true':'false'; ?>">3) <?php echo t('tab.package','Package ZIP'); ?></button></li>
+  </ul>
+
+  <div class="tab-content border border-top-0 p-3">
+    <!-- Scrape -->
+    <div class="tab-pane fade <?php echo $activeTab==='tab-scrape'?'show active':''; ?>" id="tab-scrape">
+      <form method="post" class="mb-3" id="scrapeForm" enctype="multipart/form-data">
+        <input type="hidden" name="action" value="scrape">
+        <input type="hidden" name="active_tab" value="tab-scrape">
+        <div class="mb-2">
+          <label class="form-label"><?php echo t('scrape.urls_label','URLs ou HTML'); ?></label>
+          <textarea class="form-control" name="urls" rows="6" placeholder="<?php echo t('scrape.urls_placeholder'); ?>"></textarea>
+          <div class="small-muted"><?php echo t('scrape.supported'); ?></div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label"><?php echo t('scrape.urls_file_label', 'Fichier texte de liens'); ?></label>
+          <input type="file" class="form-control" name="urls_file" accept=".txt,.csv,.list,text/plain">
+          <div class="form-text"><?php echo t('scrape.urls_file_help', 'Importez un fichier texte contenant un lien par ligne, ou des lignes au format name|title_id|url.'); ?></div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label"><?php echo t('scrape.torrent_file_label', 'Fichier torrent (.torrent)'); ?></label>
+          <input type="file" class="form-control" name="torrent_file" accept=".torrent,application/x-bittorrent">
+          <div class="form-text"><?php echo t('scrape.torrent_file_help', 'Importez directement un fichier .torrent. Le contenu sera analysé et les jeux listés comme source torrent.'); ?></div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label"><?php echo t('scrape.password_label'); ?></label>
+          <input type="password" class="form-control" name="scrape_password" placeholder="<?php echo t('scrape.password_placeholder'); ?>">
+          <div class="form-text"><?php echo t('scrape.password_help'); ?></div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label"><?php echo t('scrape.cookies_label','Cookies (optionnel)'); ?></label>
+          <textarea class="form-control" name="scrape_cookies" rows="2" placeholder="<?php echo t('scrape.cookies_placeholder','cf_clearance=...; iax=...; logged-in-sig=...'); ?>"><?php echo h($_SESSION['scrape_cookies'] ?? ''); ?></textarea>
+          <div class="form-text"><?php echo t('scrape.cookies_help','Copiez l\'en-tête Cookie depuis votre navigateur si le contenu est réservé. Pour les sites protégés par Cloudflare (lolroms.com…), copiez le cookie cf_clearance.'); ?></div>
+          <div class="form-check mt-1">
+            <input class="form-check-input" type="checkbox" name="remember_cookies" id="remember_cookies" <?php echo !empty($_SESSION['scrape_cookies']) ? 'checked' : ''; ?>>
+            <label class="form-check-label" for="remember_cookies"><?php echo t('scrape.cookies_remember','Mémoriser ce cookie pour la session'); ?></label>
+          </div>
+        </div>
+  <button class="btn btn-primary" type="submit"><?php echo t('btn.scrape_go','Scraper'); ?></button>
+      </form>
+      <div id="scrapeExtensionsBox" class="mb-2" style="display:none"></div>
+
+      <?php if (!empty($scraped)): ?>
+        <?php
+          $scrapedTotalLinks = 0;
+          $scrapedMergedRows = [];
+          foreach ($scraped as $scrapedEntry) {
+            $entryRows = isset($scrapedEntry['rows']) && is_array($scrapedEntry['rows']) ? $scrapedEntry['rows'] : [];
+            $scrapedTotalLinks += count($entryRows);
+            if (!empty($entryRows)) {
+              $scrapedMergedRows = array_merge($scrapedMergedRows, $entryRows);
+            }
+          }
+        ?>
+        <h5 class="d-flex align-items-center justify-content-between">
+          <span><?php echo t('scrape.results','Résultats'); ?></span>
+        </h5>
+        <div class="alert alert-light border d-flex flex-wrap gap-3 align-items-center mb-3">
+          <span><strong><?php echo h(t('scrape.total_links_label', 'Total links')); ?>:</strong> <?php echo (int)$scrapedTotalLinks; ?></span>
+          <span><strong><?php echo h(t('scrape.total_size_label', 'Total size')); ?>:</strong> <?php echo h(calculate_total_size($scrapedMergedRows)); ?></span>
+        </div>
+        <form method="post" class="scrape-target-card scrape-attach-form" id="scrapeAttachAllForm" onsubmit="return validateScrapeAttachForm(this)" enctype="multipart/form-data">
+          <input type="hidden" name="action" value="attach_all_scrapes_to_platform">
+          <input type="hidden" name="active_tab" value="tab-scrape">
+          <input type="hidden" name="attach_mode" value="append">
+          <input type="hidden" name="scrape_extensions_filter_active" class="scrape-extensions-filter-active" value="0">
+          <input type="hidden" name="scrape_selected_extensions" class="scrape-selected-extensions-input" value="">
+          <input type="hidden" name="platform_file" class="platform-file-hidden" required>
+          <div class="scrape-target-header">
+            <h6 class="scrape-target-title"><?php echo t('scrape.attach_all_title','Add all links in the same platform'); ?></h6>
+            <div class="scrape-target-actions">
+              <button class="btn btn-sm btn-primary" type="submit" onclick="this.form.elements.attach_mode.value='append';"><?php echo t('btn.attach_all','ADD ALL'); ?></button>
+              <button class="btn btn-sm btn-outline-warning" type="submit" onclick="this.form.elements.attach_mode.value='replace'; return confirm('<?php echo addslashes(t('confirm.attach_replace','Replace the existing games in this platform with this selection?')); ?>');"><?php echo t('btn.attach_all_replace','REPLACE ALL'); ?></button>
+            </div>
+          </div>
+          <div class="platform-form-grid">
+            <div class="platform-form-panel">
+              <label class="form-label"><?php echo t('label.platform_name'); ?></label>
+              <div class="platform-form-stack">
+                <select class="form-select batocera-name-select">
+                  <option value=""><?php echo t('placeholder.select_platform','Plateforme...'); ?></option>
+                </select>
+                <input class="form-control platform-name-input" name="platform_name" placeholder="<?php echo h(t('placeholder.new_platform_name','Nouvelle plateforme')); ?>" required>
+              </div>
+            </div>
+            <div class="platform-form-panel">
+              <label class="form-label"><?php echo t('label.folder'); ?></label>
+              <div class="platform-form-stack">
+                <select class="form-select batocera-folder-select">
+                  <option value=""><?php echo t('placeholder.select_folder','Dossier...'); ?></option>
+                </select>
+                <input class="form-control folder-input" name="batocera_folder" placeholder="<?php echo h(t('placeholder.new_folder','Nouveau dossier')); ?>" required>
+              </div>
+            </div>
+            <div class="platform-form-panel">
+              <label class="form-label"><?php echo t('label.platform_image'); ?></label>
+              <div class="platform-form-stack">
+                <select class="form-select" name="platform_image_existing">
+                  <option value=""><?php echo h(t('placeholder.platform_image_existing', 'Select an existing image...')); ?></option>
+                  <?php foreach ($availableImageNames as $imageName): ?>
+                    <option value="<?php echo h($imageName); ?>"><?php echo h($imageName); ?></option>
+                  <?php endforeach; ?>
+                </select>
+                <input type="file" class="form-control" name="platform_image_file" accept="image/*">
+              </div>
+            </div>
+          </div>
+          <div class="form-text mt-2"><?php echo t('scrape.attach_target_help','Choose an existing platform or type a new one.'); ?></div>
+        </form>
+        <div id="scrapeResultsBox">
+        <?php foreach ($scraped as $idx => $entry): ?>
+          <div class="mb-3 scrape-result-block" data-rows='<?php echo h(json_encode($entry['rows'], JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE)); ?>'>
+            <div class="scrape-source-summary">
+              <div><span class="pill"><?php echo t('scrape.source','Source'); ?></span> <?php echo h($entry['label']); ?></div>
+              <div class="scrape-source-details"><?php printf(t('scrape.files_count','%d fichier(s)'), count($entry['rows'])); ?> | <?php echo calculate_total_size($entry['rows']); ?></div>
+            </div>
+            <pre class="scrape-rows-json"><?php echo h(json_encode($entry['rows'], JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE)); ?></pre>
+            <form method="post" class="scrape-target-card scrape-attach-form" onsubmit="return validateScrapeAttachForm(this)" enctype="multipart/form-data">
+              <input type="hidden" name="action" value="attach_scrape_to_platform">
+              <input type="hidden" name="active_tab" value="tab-scrape">
+              <input type="hidden" name="scrape_index" value="<?php echo (int)$idx; ?>">
+              <input type="hidden" name="attach_mode" value="append">
+              <input type="hidden" name="scrape_extensions_filter_active" class="scrape-extensions-filter-active" value="0">
+              <input type="hidden" name="scrape_selected_extensions" class="scrape-selected-extensions-input" value="">
+              <input type="hidden" class="scrape-url-source" value="<?php echo h($entry['label']); ?>">
+              <input type="hidden" name="platform_file" class="platform-file-hidden" required>
+              <div class="scrape-target-header">
+                <h6 class="scrape-target-title"><?php echo t('scrape.attach_single_title','Choose a platform for current link'); ?></h6>
+                <div class="scrape-target-actions">
+                  <button class="btn btn-sm btn-success" type="submit" onclick="this.form.elements.attach_mode.value='append';"><?php echo t('btn.attach_platform','ADD TO PLATFORM'); ?></button>
+                  <button class="btn btn-sm btn-outline-warning" type="submit" onclick="this.form.elements.attach_mode.value='replace'; return confirm('<?php echo addslashes(t('confirm.attach_replace','Replace the existing games in this platform with this selection?')); ?>');"><?php echo t('btn.attach_platform_replace','REPLACE EXISTING LINKS'); ?></button>
+                </div>
+              </div>
+              <div class="platform-form-grid">
+                <div class="platform-form-panel">
+                  <label class="form-label"><?php echo t('label.platform_name'); ?></label>
+                  <div class="platform-form-stack">
+                    <select class="form-select batocera-name-select">
+                      <option value=""><?php echo t('placeholder.select_platform','Plateforme...'); ?></option>
+                    </select>
+                    <input class="form-control platform-name-input" name="platform_name" placeholder="<?php echo h(t('placeholder.new_platform_name','Nouvelle plateforme')); ?>" required>
+                  </div>
+                </div>
+                <div class="platform-form-panel">
+                  <label class="form-label"><?php echo t('label.folder'); ?></label>
+                  <div class="platform-form-stack">
+                    <select class="form-select batocera-folder-select">
+                      <option value=""><?php echo t('placeholder.select_folder','Dossier...'); ?></option>
+                    </select>
+                    <input class="form-control folder-input" name="batocera_folder" placeholder="<?php echo h(t('placeholder.new_folder','Nouveau dossier')); ?>" required>
+                  </div>
+                </div>
+                <div class="platform-form-panel">
+                  <label class="form-label"><?php echo t('label.platform_image'); ?></label>
+                  <div class="platform-form-stack">
+                    <select class="form-select" name="platform_image_existing">
+                      <option value=""><?php echo h(t('placeholder.platform_image_existing', 'Select an existing image...')); ?></option>
+                      <?php foreach ($availableImageNames as $imageName): ?>
+                        <option value="<?php echo h($imageName); ?>"><?php echo h($imageName); ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <input type="file" class="form-control" name="platform_image_file" accept="image/*">
+                  </div>
+                </div>
+              </div>
+              <div class="form-text mt-2"><?php echo t('scrape.attach_target_help','Choose an existing platform or type a new one.'); ?></div>
+            </form>
+          </div>
+        <?php endforeach; ?>
+        </div>
+        <script>
+        // Remplir les listes déroulantes Batocera dans les résultats de scrap (noms dédiés pour éviter collisions globales)
+        let rgsxScrapeBatoceraSystems = [];
+        // Plateformes de la session (créées manuellement)
+        const sessionPlatforms = <?php echo json_encode(
+          isset($_SESSION['systems_list']) && is_array($_SESSION['systems_list'])
+            ? array_map(function($system) {
+                return [
+                  'name' => $system['platform_name'] ?? '',
+                  'folder' => $system['folder'] ?? ''
+                ];
+              }, $_SESSION['systems_list'])
+            : []
+        ); ?>;
+
+        function scrapePlatformFileName(name) {
+          const trimmed = (name || '').trim();
+          if (!trimmed) return '';
+          return /\.json$/i.test(trimmed) ? trimmed : (trimmed + '.json');
+        }
+
+        function validateScrapeAttachForm(form) {
+          const nameInput = form.querySelector('.platform-name-input');
+          const folderInput = form.querySelector('.folder-input');
+          const hidden = form.querySelector('.platform-file-hidden');
+          const platformName = nameInput ? nameInput.value.trim() : '';
+          const folderName = folderInput ? folderInput.value.trim() : '';
+          if (!platformName || !folderName) {
+            alert(<?php echo json_encode(t('err.fields_required','platform_name et folder requis.')); ?>);
+            return false;
+          }
+          if (typeof window.syncScrapeAttachExtensions === 'function') {
+            window.syncScrapeAttachExtensions(form);
+          }
+          if (hidden) hidden.value = scrapePlatformFileName(platformName);
+          return !!(hidden && hidden.value);
+        }
+
+        function fetchScrapeBatoceraSystems(cb) {
+          if (rgsxScrapeBatoceraSystems.length) { cb && cb(); return; }
+          fetch('assets/batocera_systems.json')
+            .then(r=>r.json())
+            .then(data=>{
+              if (Array.isArray(data) && data.length && Array.isArray(data[0])) {
+                try { data = data.flat(); } catch(_) { data = data[0]; }
+              }
+              const batoceraData = (Array.isArray(data) ? data : []).filter(d => d && typeof d === 'object' && 'name' in d && 'folder' in d);
+              rgsxScrapeBatoceraSystems = [...batoceraData, ...sessionPlatforms].filter(d => d.name && d.folder);
+              const seen = new Set();
+              rgsxScrapeBatoceraSystems = rgsxScrapeBatoceraSystems.reverse().filter(d => {
+                const key = d.name.toLowerCase();
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+              }).reverse();
+              cb && cb();
+            })
+            .catch(_ => {
+              rgsxScrapeBatoceraSystems = sessionPlatforms.filter(d => d.name && d.folder);
+              cb && cb();
+            });
+        }
+
+        function fillScrapeBatoceraDropdowns(form) {
+          const nameSel = form.querySelector('.batocera-name-select');
+          const folderSel = form.querySelector('.batocera-folder-select');
+          const nameInput = form.querySelector('.platform-name-input');
+          const folderInput = form.querySelector('.folder-input');
+          const hidden = form.querySelector('.platform-file-hidden');
+          if (!nameSel || !folderSel) return;
+          nameSel.innerHTML = '<option value="">'+<?php echo json_encode(t('placeholder.select_platform','Plateforme...')); ?>+'</option>';
+          folderSel.innerHTML = '<option value="">'+<?php echo json_encode(t('placeholder.select_folder','Dossier...')); ?>+'</option>';
+          const sorted = rgsxScrapeBatoceraSystems.slice().sort((a, b) => (a.name||'').localeCompare(b.name||'', 'fr', {sensitivity:'base'}));
+          for (const sys of sorted) {
+            const opt1 = document.createElement('option'); opt1.value = sys.name; opt1.textContent = sys.name; nameSel.appendChild(opt1);
+            const opt2 = document.createElement('option'); opt2.value = sys.folder; opt2.textContent = sys.folder; folderSel.appendChild(opt2);
+          }
+          const urlInput = form.querySelector('.scrape-url-source');
+          if (urlInput && urlInput.value) {
+            const url = urlInput.value.toLowerCase();
+            let best = null, bestScore = 0;
+            for (const sys of sorted) {
+              const norm = s => s.normalize('NFD').replace(/[^\w]/g, '').toLowerCase();
+              const sysName = norm(sys.name);
+              const sysFolder = norm(sys.folder);
+              const urlNorm = norm(url);
+              let score = 0;
+              if (urlNorm.includes(sysFolder)) score += 2;
+              if (urlNorm.includes(sysName)) score += 1;
+              if (urlNorm.indexOf(sysFolder) === 0) score += 1;
+              if (urlNorm.indexOf(sysName) === 0) score += 1;
+              if (score > bestScore) { best = sys; bestScore = score; }
+            }
+            if (best && bestScore > 0) {
+              nameSel.value = best.name;
+              folderSel.value = best.folder;
+              if (nameInput) nameInput.value = best.name;
+              if (folderInput) folderInput.value = best.folder;
+              if (hidden) hidden.value = scrapePlatformFileName(best.name);
+            }
+          }
+        }
+
+        function setupScrapeBatoceraAttachSync(form) {
+          const nameSel = form.querySelector('.batocera-name-select');
+          const folderSel = form.querySelector('.batocera-folder-select');
+          const nameInput = form.querySelector('.platform-name-input');
+          const folderInput = form.querySelector('.folder-input');
+          const hidden = form.querySelector('.platform-file-hidden');
+          if (!nameSel || !folderSel || !hidden || !nameInput || !folderInput) return;
+          const syncHidden = function() {
+            hidden.value = scrapePlatformFileName(nameInput.value);
+          };
+          const syncSelectsFromManual = function() {
+            const nameVal = nameInput.value.trim().toLowerCase();
+            const folderVal = folderInput.value.trim().toLowerCase();
+            const byName = nameVal ? rgsxScrapeBatoceraSystems.find(s => (s.name || '').trim().toLowerCase() === nameVal) : null;
+            const byFolder = folderVal ? rgsxScrapeBatoceraSystems.find(s => (s.folder || '').trim().toLowerCase() === folderVal) : null;
+            const sys = byName || byFolder;
+            if (sys) {
+              nameSel.value = sys.name;
+              folderSel.value = sys.folder;
+              if (byName && !folderInput.value.trim()) folderInput.value = sys.folder;
+              if (byFolder && !nameInput.value.trim()) nameInput.value = sys.name;
+            } else {
+              if (!byName) nameSel.value = '';
+              if (!byFolder) folderSel.value = '';
+            }
+            syncHidden();
+          };
+          nameSel.addEventListener('change', function() {
+            const sys = rgsxScrapeBatoceraSystems.find(s => s.name === nameSel.value);
+            if (sys) {
+              folderSel.value = sys.folder;
+              nameInput.value = sys.name;
+              folderInput.value = sys.folder;
+              syncHidden();
+            }
+          });
+          folderSel.addEventListener('change', function() {
+            const sys = rgsxScrapeBatoceraSystems.find(s => s.folder === folderSel.value);
+            if (sys) {
+              nameSel.value = sys.name;
+              nameInput.value = sys.name;
+              folderInput.value = sys.folder;
+              syncHidden();
+            }
+          });
+          nameInput.addEventListener('input', syncSelectsFromManual);
+          folderInput.addEventListener('input', syncSelectsFromManual);
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+          fetchScrapeBatoceraSystems(function() {
+            document.querySelectorAll('.scrape-attach-form').forEach(form => {
+              fillScrapeBatoceraDropdowns(form);
+              setupScrapeBatoceraAttachSync(form);
+            });
+          });
+        });
+        </script>
+        <script>
+        // Dynamically build extension filter after scraping
+        (function(){
+          const resultsBox = document.getElementById('scrapeResultsBox');
+          const extBox = document.getElementById('scrapeExtensionsBox');
+          if (!resultsBox || !extBox) return;
+          const attachForms = Array.from(document.querySelectorAll('.scrape-attach-form'));
+          function extractExtensionFromRow(row) {
+            if (!Array.isArray(row)) return '';
+            const candidates = [row[1], row[0]];
+            for (const candidate of candidates) {
+              if (typeof candidate !== 'string') continue;
+              let value = candidate.trim();
+              if (!value) continue;
+              // Special case: rgsx+torrent:// URLs store the file path in the 'path' query parameter
+              if (/^rgsx\+torrent:\/\//i.test(value)) {
+                try {
+                  const qmark = value.indexOf('?');
+                  if (qmark !== -1) {
+                    const params = new URLSearchParams(value.slice(qmark + 1));
+                    const path = params.get('path') || '';
+                    if (path) {
+                      const basename = path.split('/').pop() || path;
+                      const dot = basename.lastIndexOf('.');
+                      if (dot > 0 && dot < basename.length - 1) {
+                        const ext = basename.slice(dot + 1).toLowerCase();
+                        if (/^[a-z0-9]{1,32}$/.test(ext)) return ext;
+                      }
+                    }
+                  }
+                } catch (_) {}
+                return '';
+              }
+              try {
+                if (/^https?:\/\//i.test(value)) {
+                  const parsed = new URL(value);
+                  const fileFromPath = decodeURIComponent((parsed.pathname.split('/').pop() || '').trim());
+                  const fileFromQuery = decodeURIComponent((parsed.searchParams.get('filename') || '').trim());
+                  value = fileFromQuery || fileFromPath;
+                } else {
+                  value = value.split('/').pop() || value;
+                }
+              } catch (_) {
+                value = value.split('/').pop() || value;
+              }
+              const dotIndex = value.lastIndexOf('.');
+              if (dotIndex > 0 && dotIndex < value.length - 1) {
+                const ext = value.slice(dotIndex + 1).toLowerCase();
+                if (/^[a-z0-9]{1,32}$/.test(ext)) return ext;
+              }
+            }
+            return '';
+          }
+          // Collect all extensions from all results
+          let allExts = new Set();
+          let allRows = [];
+          document.querySelectorAll('.scrape-result-block').forEach(block => {
+            const rows = JSON.parse(block.getAttribute('data-rows'));
+            allRows = allRows.concat(rows);
+            for (const row of rows) {
+              const ext = extractExtensionFromRow(row);
+              if (ext) allExts.add(ext);
+            }
+          });
+          allExts = Array.from(allExts).sort();
+          if (allExts.length === 0) return;
+          // Build checkboxes
+          let html = '<label class="form-label"><?php echo t('label.extensions_detected'); ?></label><br>';
+          for (const ext of allExts) {
+            html += `<div class="form-check form-check-inline">
+              <input class="form-check-input scrape-ext-filter" type="checkbox" value="${ext}" id="scrape_ext_${ext}" checked>
+              <label class="form-check-label" for="scrape_ext_${ext}">${ext}</label>
+            </div>`;
+          }
+          extBox.innerHTML = html;
+          extBox.style.display = '';
+          function getCheckedExtensions() {
+            return Array.from(document.querySelectorAll('.scrape-ext-filter:checked')).map(cb => cb.value.toLowerCase());
+          }
+          window.syncScrapeAttachExtensions = function(form) {
+            const checked = getCheckedExtensions();
+            const forms = form ? [form] : attachForms;
+            forms.forEach(targetForm => {
+              const activeInput = targetForm.querySelector('.scrape-extensions-filter-active');
+              const selectedInput = targetForm.querySelector('.scrape-selected-extensions-input');
+              if (activeInput) activeInput.value = '1';
+              if (selectedInput) selectedInput.value = checked.join(',');
+            });
+          };
+          window.syncScrapeAttachExtensions();
+          // Filtering logic
+          function filterScrapeResults() {
+            const checked = getCheckedExtensions();
+            document.querySelectorAll('.scrape-result-block').forEach(block => {
+              const rows = JSON.parse(block.getAttribute('data-rows'));
+              const filtered = rows.filter(row => checked.includes(extractExtensionFromRow(row)));
+              block.querySelector('.scrape-rows-json').textContent = JSON.stringify(filtered, null, 2);
+            });
+            window.syncScrapeAttachExtensions();
+          }
+          document.querySelectorAll('.scrape-ext-filter').forEach(cb => {
+            cb.addEventListener('change', filterScrapeResults);
+          });
+        })();
+        </script>
+      <?php endif; ?>
+    </div>
+
+    <!-- Systems & Games -->
+    <div class="tab-pane fade <?php echo ($activeTab==='tab-systems' || $activeTab==='tab-games')?'show active':''; ?>" id="tab-systems">
+      <div class="systems-toolbar">
+        <button
+          type="button"
+          id="toggleSystemsAddButton"
+          class="btn btn-outline-primary btn-sm"
+          data-open-label="<?php echo h(t('btn.hide_new_platform_form', 'Masquer nouvelle plateforme')); ?>"
+          data-closed-label="<?php echo h(t('btn.create_new_platform', 'Créer nouvelle plateforme')); ?>"
+          aria-expanded="<?php echo $showSystemsAddForm ? 'true' : 'false'; ?>"
+          onclick="toggleSystemsAddForm()"
+        ><?php echo h($showSystemsAddForm ? t('btn.hide_new_platform_form', 'Masquer nouvelle plateforme') : t('btn.create_new_platform', 'Créer nouvelle plateforme')); ?></button>
+        <form method="post" class="d-inline">
+          <input type="hidden" name="action" value="systems_new">
+          <input type="hidden" name="active_tab" value="tab-systems">
+          <button class="btn btn-outline-danger btn-sm" type="submit" onclick="return confirm('<?php echo t('confirm.clear_platforms'); ?>');"><?php echo t('btn.clear_platforms'); ?></button>
+        </form>
+        <form method="post" class="d-inline">
+          <input type="hidden" name="action" value="games_clear_all">
+          <input type="hidden" name="active_tab" value="tab-systems">
+          <button class="btn btn-outline-warning btn-sm" type="submit" onclick="return confirm('<?php echo t('confirm.clear_games'); ?>');"><?php echo t('btn.clear_games'); ?></button>
+        </form>
+      </div>
+      <div id="systemsAddPanel" class="<?php echo $showSystemsAddForm ? '' : 'd-none'; ?>">
+        <form method="post" class="mb-3" id="systemsAddForm" enctype="multipart/form-data">
+          <input type="hidden" name="action" value="systems_add">
+          <input type="hidden" name="active_tab" value="tab-systems">
+          <input type="hidden" name="systems_page" value="<?php echo $systemsPage; ?>">
+          <input type="hidden" name="systems_per_page" value="<?php echo $systemsPerPage; ?>">
+          <input type="hidden" name="systems_sort_order" value="<?php echo $systemsSortOrder; ?>">
+          <div class="platform-form-grid">
+            <div class="platform-form-panel">
+              <label class="form-label"><?php echo t('label.platform_name'); ?></label>
+              <div class="platform-form-stack">
+                <select class="form-select" id="batoceraPlatformName">
+                  <option value=""><?php echo t('placeholder.select_generic', 'Select...'); ?></option>
+                </select>
+                <input class="form-control" name="platform_name" id="platformNameInput" required placeholder="<?php echo h(t('placeholder.platform_name','Nom plateforme')); ?>">
+              </div>
+            </div>
+            <div class="platform-form-panel">
+              <label class="form-label"><?php echo t('label.folder'); ?></label>
+              <div class="platform-form-stack">
+                <select class="form-select" id="batoceraFolder">
+                  <option value=""><?php echo t('placeholder.select_generic', 'Select...'); ?></option>
+                </select>
+                <input class="form-control" name="folder" id="folderInput" placeholder="ex: chihiro" required>
+              </div>
+            </div>
+            <div class="platform-form-panel">
+              <label class="form-label"><?php echo t('label.platform_image'); ?></label>
+              <div class="platform-form-stack">
+                <select class="form-select" name="platform_image_existing">
+                  <option value=""><?php echo h(t('placeholder.platform_image_existing', 'Choisir une image existante...')); ?></option>
+                  <?php foreach ($availableImageNames as $imageName): ?>
+                    <option value="<?php echo h($imageName); ?>"><?php echo h($imageName); ?></option>
+                  <?php endforeach; ?>
+                </select>
+                <input type="file" class="form-control" name="platform_image_file" id="platformImageFile" accept="image/*">
+              </div>
+              <div class="form-text mt-2"><?php echo h(t('help.platform_image_priority', 'Choisissez une image existante ou importez-en une nouvelle. Un nouvel upload remplace la sélection.')); ?></div>
+            </div>
+          </div>
+          <div class="platform-form-actions">
+            <button class="btn btn-primary w-100" type="submit"><?php echo t('btn.add'); ?></button>
+          </div>
+        </form>
+      </div>
+      <div class="mb-3 d-flex flex-wrap gap-2 justify-content-between align-items-center">
+        <div class="small text-muted flex-grow-1">
+          <?php printf(t('table.systems.summary','Systèmes %d-%d sur %d'), $systemsOffset + 1, min($systemsOffset + $systemsPerPage, $systemsTotal), $systemsTotal); ?>
+        </div>
+        <form method="get" class="d-flex align-items-center gap-2 mb-0">
+          <input type="hidden" name="active_tab" value="tab-systems">
+          <input type="hidden" name="systems_page" value="1">
+          <label for="systems_sort_order" class="form-label mb-0 small"><?php echo t('label.sort_order'); ?></label>
+          <select class="form-select form-select-sm" style="width:auto" name="systems_sort_order" id="systems_sort_order" onchange="this.form.submit()">
+            <option value="original" <?php echo $systemsSortOrder === 'original' ? 'selected' : ''; ?>><?php echo t('sort.original'); ?></option>
+            <option value="alphabetical" <?php echo $systemsSortOrder === 'alphabetical' ? 'selected' : ''; ?>><?php echo t('sort.alphabetical'); ?></option>
+          </select>
+          <label for="systems_per_page" class="form-label mb-0 small"><?php echo t('label.per_page'); ?></label>
+          <select class="form-select form-select-sm" style="width:auto" name="systems_per_page" id="systems_per_page" onchange="this.form.submit()">
+            <?php foreach ([10,20,25,50,100,200] as $opt): ?>
+              <option value="<?php echo $opt; ?>" <?php echo $opt===$systemsPerPage?'selected':''; ?>><?php echo $opt; ?></option>
+            <?php endforeach; ?>
+          </select>
+        </form>
+        <div class="btn-group" role="group">
+          <a href="?active_tab=tab-systems&systems_per_page=<?php echo $systemsPerPage; ?>&systems_sort_order=<?php echo $systemsSortOrder; ?>&systems_page=<?php echo max(1, $systemsPage - 1); ?>" class="btn btn-sm btn-outline-secondary <?php echo $systemsPage <= 1 ? 'disabled' : ''; ?>"><?php echo t('pagination.prev'); ?></a>
+          <span class="btn btn-sm btn-secondary disabled"><?php echo t('pagination.page','Page'); ?> <?php echo $systemsPage; ?>/<?php echo $systemsPages; ?></span>
+          <a href="?active_tab=tab-systems&systems_per_page=<?php echo $systemsPerPage; ?>&systems_sort_order=<?php echo $systemsSortOrder; ?>&systems_page=<?php echo min($systemsPages, $systemsPage + 1); ?>" class="btn btn-sm btn-outline-secondary <?php echo $systemsPage >= $systemsPages ? 'disabled' : ''; ?>"><?php echo t('pagination.next'); ?></a>
+        </div>
+      </div>
+      <!-- Plateformes avec jeux intégrés -->
+      <div class="table-responsive">
+        <table class="table table-bordered table-striped table-sm">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th><?php echo t('label.platform_name'); ?></th>
+              <th><?php echo t('label.folder'); ?></th>
+              <th><?php echo t('label.platform_image'); ?></th>
+              <th><?php echo t('label.games'); ?></th>
+              <th><?php echo t('label.actions'); ?></th>
+            </tr>
+          </thead>
+          <tbody>
+      <?php foreach ($systemsPaginated as $i => $row): 
+        $realIndex = $systemsOffset + $i;
+        $platformName = trim((string)($row['platform_name'] ?? ''));
+        $platformFile = $platformName . '.json';
+        $games = isset($gamesMap[$platformFile]) ? $gamesMap[$platformFile] : [];
+        $gamesCount = count($games);
+        ?>
+            <tr>
+              <td><?php echo $realIndex + 1; ?></td>
+              <td><?php echo h($platformName); ?></td>
+              <td><?php echo h($row['folder'] ?? ''); ?></td>
+              <td>
+                <?php $imgName = (string)($row['platform_image'] ?? '');
+                      if ($imgName !== ''): ?>
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="small text-muted"><?php echo h($imgName); ?></span>
+                    <?php if (isset($imagesByName[$imgName])): ?>
+                      <button type="button" class="btn btn-sm btn-outline-info" onclick="showImageModal('<?php echo addslashes($imgName); ?>')" title="<?php echo h(t('tooltip.view_image', 'Voir image')); ?>"><?php echo t('btn.view'); ?></button>
+                    <?php endif; ?>
+                  </div>
+                <?php else: ?>
+                  <span class="text-muted">-</span>
+                <?php endif; ?>
+              </td>
+              <td>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleGames(<?php echo $realIndex; ?>)" data-games-count="<?php echo $gamesCount; ?>" data-games-file="<?php echo h($platformFile); ?>">
+                  <?php printf(t('label.games_count', '%d jeux'), $gamesCount); ?>
+                </button>
+              </td>
+              <td class="text-nowrap">
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="toggleEditRow(<?php echo $realIndex; ?>)"><?php echo t('btn.modify'); ?></button>
+                <form method="post" class="d-inline" onsubmit="return confirm('<?php echo addslashes(t('confirm.delete_platform_with_games', 'Supprimer cette plateforme et tous ses jeux ?')); ?>');">
+                  <input type="hidden" name="action" value="platform_delete_complete">
+                  <input type="hidden" name="active_tab" value="tab-systems">
+                  <input type="hidden" name="platform_index" value="<?php echo $realIndex; ?>">
+                  <input type="hidden" name="platform_file" value="<?php echo h($platformFile); ?>">
+                  <button class="btn btn-sm btn-outline-danger"><?php echo t('btn.delete'); ?></button>
+                </form>
+              </td>
+            </tr>
+            
+            <!-- Ligne d'édition cachée -->
+            <tr id="edit-row-<?php echo $realIndex; ?>" class="d-none">
+              <td colspan="6">
+                <form method="post" enctype="multipart/form-data">
+                  <input type="hidden" name="action" value="systems_update_with_rename">
+                  <input type="hidden" name="active_tab" value="tab-systems">
+                  <input type="hidden" name="index" value="<?php echo $realIndex; ?>">
+                  <input type="hidden" name="old_platform_name" value="<?php echo h($platformName); ?>">
+                  <input type="hidden" name="systems_page" value="<?php echo $systemsPage; ?>">
+                  <input type="hidden" name="systems_per_page" value="<?php echo $systemsPerPage; ?>">
+                  <input type="hidden" name="systems_sort_order" value="<?php echo $systemsSortOrder; ?>">
+                  <div class="platform-form-grid">
+                    <div class="platform-form-panel">
+                      <label class="form-label"><?php echo t('label.platform_name'); ?></label>
+                      <div class="platform-form-stack">
+                        <select class="form-select form-select-sm batocera-name-select">
+                          <option value=""><?php echo t('placeholder.select_generic', 'Select...'); ?></option>
+                        </select>
+                        <input class="form-control form-control-sm" name="platform_name" value="<?php echo h($platformName); ?>" required>
+                      </div>
+                    </div>
+                    <div class="platform-form-panel">
+                      <label class="form-label"><?php echo t('label.folder'); ?></label>
+                      <div class="platform-form-stack">
+                        <select class="form-select form-select-sm batocera-folder-select">
+                          <option value=""><?php echo t('placeholder.select_generic', 'Select...'); ?></option>
+                        </select>
+                        <input class="form-control form-control-sm" name="folder" value="<?php echo h($row['folder'] ?? ''); ?>" required>
+                      </div>
+                    </div>
+                    <div class="platform-form-panel">
+                      <label class="form-label"><?php echo t('label.platform_image_replace'); ?></label>
+                      <div class="platform-form-stack">
+                        <select class="form-select form-select-sm" name="platform_image_existing">
+                          <option value=""><?php echo h(t('placeholder.platform_image_keep_current', 'Conserver l\'image actuelle')); ?></option>
+                          <?php foreach ($availableImageNames as $imageName): ?>
+                            <option value="<?php echo h($imageName); ?>" <?php echo (($row['platform_image'] ?? '') === $imageName) ? 'selected' : ''; ?>><?php echo h($imageName); ?></option>
+                          <?php endforeach; ?>
+                        </select>
+                        <input type="file" class="form-control form-control-sm" name="platform_image_file" accept="image/*">
+                      </div>
+                      <div class="form-text mt-2"><?php echo h($row['platform_image'] ?? ''); ?></div>
+                    </div>
+                  </div>
+                  <div class="platform-form-actions">
+                    <button class="btn btn-sm btn-primary w-100" type="submit"><?php echo t('btn.save'); ?></button>
+                  </div>
+                </form>
+              </td>
+            </tr>
+            
+            <!-- Ligne des jeux cachée -->
+            <tr id="games-row-<?php echo $realIndex; ?>" class="d-none" data-games-file="<?php echo h($platformFile); ?>">
+              <td colspan="6">
+                <div class="p-3 bg-light">
+                  <div class="mb-3">
+                    <strong><?php echo sprintf(t('label.games_of_platform'), h($platformName), $gamesCount); ?></strong>
+                    <div class="float-end">
+                      <!-- Bouton pour ajouter un jeu -->
+                      <button class="btn btn-sm btn-success me-2" onclick="toggleAddGame(<?php echo $realIndex; ?>)"><?php echo t('btn.add_game'); ?></button>
+                      <!-- Bouton pour supprimer tous les jeux de cette plateforme -->
+                      <form method="post" class="d-inline" onsubmit="return confirm('<?php echo addslashes(t('confirm.clear_platform_games', 'Supprimer tous les jeux de cette plateforme ?')); ?>');">
+                        <input type="hidden" name="action" value="games_clear_platform">
+                        <input type="hidden" name="active_tab" value="tab-systems">
+                        <input type="hidden" name="games_file" value="<?php echo h($platformFile); ?>">
+                        <button class="btn btn-sm btn-outline-warning" type="submit"><?php echo t('btn.clean_games'); ?></button>
+                      </form>
+                    </div>
+                  </div>
+                  
+                  <!-- Formulaire d'ajout de jeu caché -->
+                  <div id="add-game-<?php echo $realIndex; ?>" class="card mb-3 d-none">
+                    <div class="card-body">
+                      <form method="post" class="row g-2 align-items-end">
+                        <input type="hidden" name="action" value="games_add_row">
+                        <input type="hidden" name="active_tab" value="tab-systems">
+                        <input type="hidden" name="games_file" value="<?php echo h($platformFile); ?>">
+                        <div class="col-md-4">
+                          <label class="form-label"><?php echo t('label.game_name'); ?></label>
+                          <input class="form-control form-control-sm" name="game_name" placeholder="<?php echo h(t('placeholder.game_name', 'Nom du fichier')); ?>" required>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label"><?php echo t('label.url'); ?></label>
+                          <input class="form-control form-control-sm" name="game_url" placeholder="https://..." required>
+                        </div>
+                        <div class="col-md-2">
+                          <label class="form-label"><?php echo t('label.size'); ?></label>
+                          <input class="form-control form-control-sm" name="game_size" placeholder="467.4M">
+                        </div>
+                        <div class="col-12">
+                          <button class="btn btn-sm btn-success" type="submit"><?php echo t('btn.add_line'); ?></button>
+                          <button class="btn btn-sm btn-secondary" type="button" onclick="toggleAddGame(<?php echo $realIndex; ?>)"><?php echo t('btn.cancel'); ?></button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                  
+                  <!-- Liste des jeux -->
+                  <div class="small text-muted" id="loading-games-<?php echo $realIndex; ?>" style="display:none;"><?php echo t('misc.loading_games', 'Chargement des jeux...'); ?></div>
+                  <div id="games-body-<?php echo $realIndex; ?>"></div>
+                </div>
+              </td>
+            </tr>
+      <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+      
+    </div>
+
+
+      
+    </div>
+
+
+
+
+
+
+
+
+    <!-- Package -->
+    <div class="tab-pane fade <?php echo $activeTab==='tab-package'?'show active':''; ?>" id="tab-package">
+      <div class="row g-3">
+        <div class="col-12">
+          <div class="card p-3 h-100">
+            <h6><?php echo t('heading.current_state','État actuel'); ?></h6>
+            <ul class="small">
+              <li><?php printf(t('stats.systems','Systèmes: %d entrée(s)'), count($systems)); ?></li>
+              <li><?php printf(t('stats.platforms_loaded','Plateformes chargées: %d fichier(s)'), count($gamesMap)); ?></li>
+              <li><?php printf(t('stats.images', 'Images: %d file(s)'), count($images)); ?></li>
+            </ul>
+            <div class="d-flex flex-column gap-2">
+            <form method="post" id="buildZipForm">
+              <input type="hidden" name="action" value="build_zip">
+              <input type="hidden" name="active_tab" value="tab-package">
+              <input type="hidden" name="zip_progress_key" value="">
+              <input type="hidden" name="skip_cache" value="0" id="buildZipSkipCache">
+              <div class="d-flex gap-2 flex-wrap">
+              <button class="btn btn-success" id="buildZipButton" type="button" onclick="submitBuildZipForm(false)" <?php echo empty($systems)?'disabled':''; ?>><?php echo t('btn.build_zip'); ?></button>
+              <button class="btn btn-outline-secondary" id="buildZipNoCacheButton" type="button" onclick="submitBuildZipForm(true)" <?php echo empty($systems)?'disabled':''; ?> title="<?php echo t('btn.build_zip_no_cache_title','Génère le ZIP sans reconstruire les caches (plus rapide)'); ?>"><?php echo t('btn.build_zip_no_cache','Générer sans cache'); ?></button>
+              </div>
+            </form>
+            <form method="post" target="downloadFrame" id="downloadSystemsForm" onsubmit="showDownloadOverlay('systems')">
+              <input type="hidden" name="action" value="systems_download">
+              <input type="hidden" name="active_tab" value="tab-package">
+              <button class="btn btn-outline-primary" type="submit" <?php echo empty($systems)?'disabled':''; ?>><?php echo t('btn.download_systems'); ?></button>
+            </form>
+            </div>
+            <p class="small-muted mt-2"><?php echo t('desc.zip_content'); ?></p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal pour afficher les images -->
+  <div class="modal fade" id="imageModal" tabindex="-1" aria-labelledby="imageModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="imageModalLabel"><?php echo t('modal.image_preview', 'Aperçu image'); ?></h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body text-center">
+          <div id="imageLoading" class="d-none">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Chargement...</span>
+            </div>
+          </div>
+          <img id="modalImage" class="img-fluid" style="max-height: 70vh; display: none;" alt="Aperçu">
+          <div id="imageError" class="text-danger d-none"><?php echo t('err.image_load', 'Erreur de chargement de l\'image'); ?></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+  // Keep URL query param active_tab in sync with selected tab and initialize it on load
+  document.addEventListener('DOMContentLoaded', function() {
+    const tabs = document.getElementById('tabs');
+    if (tabs) {
+      tabs.addEventListener('shown.bs.tab', function(e) {
+        try {
+          const target = e.target && e.target.getAttribute('data-bs-target');
+          if (!target) return;
+          const tabId = target.charAt(0) === '#' ? target.slice(1) : target;
+          const url = new URL(window.location.href);
+          url.searchParams.set('active_tab', tabId);
+          history.replaceState({}, '', url);
+        } catch(_) { /* noop */ }
+      });
+    }
+    // Ensure the param exists on first load (use current server-side active tab)
+    try {
+      const url = new URL(window.location.href);
+      if (!url.searchParams.get('active_tab')) {
+        url.searchParams.set('active_tab', '<?php echo h($activeTab); ?>');
+        history.replaceState({}, '', url);
+      }
+    } catch(_) { /* noop */ }
+  });
+
+  // Batocera dropdowns for platform_name/folder in tab 2
+  let batoceraSystems = [];
+  function loadBatoceraSystemsDropdowns() {
+    fetch('assets/batocera_systems.json')
+      .then(r => r.json())
+      .then(data => {
+        // Normalize/flatten if nested like [[{...}]]
+        if (Array.isArray(data) && data.length && Array.isArray(data[0])) {
+          try { data = data.flat(); } catch(_) { data = data[0]; }
+        }
+        // Assign to outer variable (used by setupBatoceraSync)
+        batoceraSystems = (Array.isArray(data) ? data : []).filter(d => d && typeof d === 'object' && 'name' in d && 'folder' in d);
+        const nameSel = document.getElementById('batoceraPlatformName');
+        const folderSel = document.getElementById('batoceraFolder');
+        if (!nameSel || !folderSel) return;
+        // Clear and repopulate placeholders
+        nameSel.innerHTML = '<option value="">' + uiText.selectGeneric + '</option>';
+        folderSel.innerHTML = '<option value="">' + uiText.selectGeneric + '</option>';
+        // Sort safely by name
+        const sorted = batoceraSystems.slice().sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr', {sensitivity:'base'}));
+        for (const sys of sorted) {
+          const opt1 = document.createElement('option');
+          opt1.value = sys.name;
+          opt1.textContent = sys.name;
+          nameSel.appendChild(opt1);
+          const opt2 = document.createElement('option');
+          opt2.value = sys.folder;
+          opt2.textContent = sys.folder;
+          folderSel.appendChild(opt2);
+        }
+      })
+      .catch(_ => {
+        // Leave placeholders if fetch fails
+      });
+  }
+  // Synchronize dropdowns and inputs
+  function setupBatoceraSync() {
+    const nameSel = document.getElementById('batoceraPlatformName');
+    const folderSel = document.getElementById('batoceraFolder');
+    const nameInput = document.getElementById('platformNameInput');
+    const folderInput = document.getElementById('folderInput');
+    if (!nameSel || !folderSel || !nameInput || !folderInput) return;
+    nameSel.addEventListener('change', function() {
+      const val = nameSel.value;
+      if (!val) return;
+      nameInput.value = val;
+      const sys = batoceraSystems.find(s => s.name === val);
+      if (sys) folderInput.value = sys.folder;
+    });
+    folderSel.addEventListener('change', function() {
+      const val = folderSel.value;
+      if (!val) return;
+      folderInput.value = val;
+      const sys = batoceraSystems.find(s => s.folder === val);
+      if (sys) nameInput.value = sys.name;
+    });
+  }
+  // Only load Batocera systems when tab 2 is shown
+  document.addEventListener('DOMContentLoaded', function() {
+    const tabBtn = document.querySelector('[data-bs-target="#tab-systems"]');
+    if (tabBtn) {
+      tabBtn.addEventListener('shown.bs.tab', function() {
+        loadBatoceraSystemsDropdowns();
+        setTimeout(setupBatoceraSync, 200);
+      });
+    }
+    // If already on tab 2 at load
+    if (document.getElementById('tab-systems').classList.contains('show')) {
+      loadBatoceraSystemsDropdowns();
+      setTimeout(setupBatoceraSync, 200);
+    }
+  });
+  </script>
+  <script>
+    // Ensure every submitted form includes the current active tab id
+    document.addEventListener('submit', function(e){
+      const form = e.target;
+      if (!(form instanceof HTMLFormElement)) return;
+      if (e.defaultPrevented) {
+        return;
+      }
+      if (form.id === 'buildZipForm') {
+        e.preventDefault();
+        submitBuildZipForm();
+        return false;
+      }
+      // Determine current active tab-pane
+      const activePane = document.querySelector('.tab-pane.show.active');
+      const tabId = activePane ? activePane.id : 'tab-scrape';
+      let hidden = form.querySelector('input[name="active_tab"]');
+      if (!hidden) {
+        hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = 'active_tab';
+        form.appendChild(hidden);
+      }
+      hidden.value = tabId;
+      // Download forms manage their own overlay/progress flow and must keep their native submit path.
+      if ((form.getAttribute('target') || '') === 'downloadFrame') {
+        return;
+      }
+      // Show loading overlay for any submit and delay slightly to let it paint
+      if (form.dataset.delayed !== '1') {
+        e.preventDefault();
+        form.dataset.delayed = '1';
+        showOverlay();
+        setTimeout(() => { try { form.submit(); } catch(e){} }, 60);
+        return false;
+      }
+    });
+
+    function toggleSystemsAddForm(forceOpen) {
+      const panel = document.getElementById('systemsAddPanel');
+      const button = document.getElementById('toggleSystemsAddButton');
+      if (!panel || !button) return;
+
+      const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : panel.classList.contains('d-none');
+      panel.classList.toggle('d-none', !shouldOpen);
+      button.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+      button.textContent = shouldOpen ? (button.dataset.openLabel || '') : (button.dataset.closedLabel || '');
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      toggleSystemsAddForm(<?php echo $showSystemsAddForm ? 'true' : 'false'; ?>);
+    });
+
+    // Toggle inline edit rows
+    function toggleEditRow(i){
+      const row = document.getElementById('edit-row-' + i);
+      if (!row) return;
+      
+      const isOpening = row.classList.contains('d-none');
+      row.classList.toggle('d-none');
+      
+      // Si on ouvre le formulaire, remplir les listes déroulantes
+      if (isOpening) {
+        // S'assurer que les données Batocera sont chargées (utiliser la même fonction que le formulaire principal)
+        if (batoceraSystems && batoceraSystems.length > 0) {
+          fillEditFormDropdowns(row);
+          setupEditFormListeners(row);
+        } else {
+          // Charger les données d'abord
+          loadBatoceraSystemsDropdowns();
+          // Attendre un peu puis remplir
+          setTimeout(() => {
+            fillEditFormDropdowns(row);
+            setupEditFormListeners(row);
+          }, 100);
+        }
+      }
+    }
+    
+    // Fill dropdowns for edit form (use same data as main form)
+    function fillEditFormDropdowns(form) {
+      const nameSel = form.querySelector('.batocera-name-select');
+      const folderSel = form.querySelector('.batocera-folder-select');
+      if (!nameSel || !folderSel || !batoceraSystems || batoceraSystems.length === 0) return;
+      
+      // Clear and populate
+      nameSel.innerHTML = '<option value="">' + uiText.selectGeneric + '</option>';
+      folderSel.innerHTML = '<option value="">' + uiText.selectGeneric + '</option>';
+      
+      // Sort by name
+      const sorted = batoceraSystems.slice().sort((a,b) => (a.name||'').localeCompare(b.name||'', 'fr', {sensitivity:'base'}));
+      for (const sys of sorted) {
+        const opt1 = document.createElement('option');
+        opt1.value = sys.name;
+        opt1.textContent = sys.name;
+        nameSel.appendChild(opt1);
+        
+        const opt2 = document.createElement('option');
+        opt2.value = sys.folder;
+        opt2.textContent = sys.folder;
+        folderSel.appendChild(opt2);
+      }
+    }
+    
+    // Setup listeners for edit form dropdowns
+    function setupEditFormListeners(form) {
+      const nameSel = form.querySelector('.batocera-name-select');
+      const folderSel = form.querySelector('.batocera-folder-select');
+      const nameInput = form.querySelector('input[name="platform_name"]');
+      const folderInput = form.querySelector('input[name="folder"]');
+      
+      if (!nameSel || !folderSel || !nameInput || !folderInput) return;
+      
+      // Éviter les doublons d'event listeners
+      nameSel.onchange = function() {
+        const sys = batoceraSystems.find(s => s.name === nameSel.value);
+        if (sys) { 
+          folderSel.value = sys.folder;
+          nameInput.value = sys.name;
+          folderInput.value = sys.folder;
+        }
+      };
+      
+      folderSel.onchange = function() {
+        const sys = batoceraSystems.find(s => s.folder === folderSel.value);
+        if (sys) { 
+          nameSel.value = sys.name;
+          nameInput.value = sys.name;
+          folderInput.value = sys.folder;
+        }
+      };
+    }
+    
+    // Toggle games display (nouvelle interface tableau)
+    function toggleGames(i){
+      const gamesRow = document.getElementById('games-row-' + i);
+      const gamesBody = document.getElementById('games-body-' + i);
+      const loadingDiv = document.getElementById('loading-games-' + i);
+      
+      if (!gamesRow) return;
+      
+      if (gamesRow.classList.contains('d-none')) {
+        // Montrer les jeux
+        gamesRow.classList.remove('d-none');
+        
+        // Charger les jeux si pas encore fait
+        if (!gamesBody.dataset.loaded) {
+          const gamesFile = gamesRow.dataset.gamesFile;
+          if (!gamesFile) return;
+          loadGamesForPlatform(gamesFile, gamesBody, loadingDiv);
+        }
+      } else {
+        // Cacher les jeux
+        gamesRow.classList.add('d-none');
+      }
+    }
+    
+    // Toggle add game form
+    function toggleAddGame(i){
+      const addGameDiv = document.getElementById('add-game-' + i);
+      if (!addGameDiv) return;
+      addGameDiv.classList.toggle('d-none');
+    }
+    
+    // Toggle edit row for games in the loaded table
+    function toggleGameEditRow(i){
+      const row = document.getElementById('game-edit-row-' + i);
+      if (!row) return;
+      row.classList.toggle('d-none');
+    }
+    
+    function requestGamesTable(gamesFile, targetBody, loadingDiv, page = 1) {
+      if (!gamesFile || !targetBody) return;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      
+      window.activeRequests = window.activeRequests || new Set();
+      window.activeRequests.add(controller);
+
+      if (loadingDiv) loadingDiv.style.display = 'block';
+      
+      fetch(baseUrl + '?render_games_table=1&file=' + encodeURIComponent(gamesFile) + '&page=' + page, {
+        cache: 'no-store',
+        signal: controller.signal
+      })
+      .then(response => {
+        clearTimeout(timeoutId);
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.text();
+      })
+      .then(html => {
+        targetBody.innerHTML = html;
+        targetBody.dataset.loaded = '1';
+        if (loadingDiv) loadingDiv.style.display = 'none';
+        window.activeRequests.delete(controller);
+      })
+      .catch(err => {
+        clearTimeout(timeoutId);
+        window.activeRequests.delete(controller);
+        if (loadingDiv) loadingDiv.style.display = 'none';
+        const errorMsg = err.name === 'AbortError' ? 'Timeout (30s)' : (err && err.message ? err.message : err);
+        targetBody.innerHTML = '<div class="text-danger">' + uiText.gamesLoadError + ' ' + errorMsg + '</div>';
+      });
+    }
+
+    // Load games for a specific platform
+    function loadGamesForPlatform(gamesFile, targetBody, loadingDiv) {
+      requestGamesTable(gamesFile, targetBody, loadingDiv, 1);
+    }
+    
+    // Enforce max 20 selected files for games upload
+    function handleGamesFilesChange(input){
+      if (!(input instanceof HTMLInputElement)) return;
+      const files = input.files;
+      if (!files) { showOverlayAndSubmit(input.form); return; }
+      const max = 20;
+      if (files.length > max) {
+        alert('Vous avez sélectionné ' + files.length + ' fichiers. Maximum autorisé: ' + max + '\\nPour plus de 20 fichiers, créez un ZIP contenant vos .json.');
+        // Reset selection to force user to re-choisir
+        input.value = '';
+        return;
+      }
+      showOverlayAndSubmit(input.form);
+    }
+    
+    // Loading overlay + deterministic tab switching (manual activation always)
+    (function(){
+      const overlay = document.getElementById('loadingOverlay');
+      const show = () => { if (overlay) overlay.classList.add('active'); };
+      const hide = () => { if (overlay) overlay.classList.remove('active'); };
+      const activateTab = (targetSel, btn) => {
+        try {
+          // Switch active button and aria
+          document.querySelectorAll('[data-bs-toggle="tab"]').forEach(b => {
+            b.classList.remove('active');
+            b.setAttribute('aria-selected', 'false');
+          });
+          if (btn) {
+            btn.classList.add('active');
+            btn.setAttribute('aria-selected', 'true');
+          }
+          // Switch panes - hide all first
+          document.querySelectorAll('.tab-pane').forEach(p => {
+            p.classList.remove('show','active');
+            p.style.display = 'none'; // Force hide
+          });
+          const pane = document.querySelector(targetSel);
+          if (pane) {
+            pane.classList.add('show','active');
+            pane.style.display = 'block'; // Force show
+          }
+        } catch (_) { /* noop */ }
+      };
+      // Delegate on the tabs container to be extra-resilient
+      const tabsBar = document.getElementById('tabs');
+      if (tabsBar) {
+        tabsBar.addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-bs-toggle="tab"][data-bs-target]');
+          if (!btn) return;
+          e.preventDefault(); // Prevent any default link behavior
+          e.stopPropagation(); // Stop event bubbling
+          const target = btn.getAttribute('data-bs-target');
+          if (!target) return;
+          show();
+          // Activate immediately; hide overlay shortly after paint
+          activateTab(target, btn);
+          // Initialize per-tab content when using manual activation
+          if (target === '#tab-systems') {
+            try { loadBatoceraSystemsDropdowns(); setTimeout(setupBatoceraSync, 200); } catch(_) {}
+          }
+          setTimeout(hide, 150);
+        });
+      }
+      
+      // Initialize tabs on page load
+      const initTabs = () => {
+        try {
+          // Hide all panes first
+          document.querySelectorAll('.tab-pane').forEach(p => {
+            p.style.display = 'none';
+            p.classList.remove('show', 'active');
+          });
+          // Show active pane
+          const activeBtn = document.querySelector('[data-bs-toggle="tab"].active');
+          if (activeBtn) {
+            const target = activeBtn.getAttribute('data-bs-target');
+            const pane = document.querySelector(target);
+            if (pane) {
+              pane.style.display = 'block';
+              pane.classList.add('show', 'active');
+            }
+          }
+        } catch (_) { /* noop */ }
+      };
+      
+      // Run initialization
+      initTabs();
+      // Also listen to Bootstrap event (if present) purely to hide overlay on heavy tabs
+      document.addEventListener('shown.bs.tab', (ev) => {
+        const target = ev.target && ev.target.getAttribute ? ev.target.getAttribute('data-bs-target') : '';
+        if (target === '#tab-systems') {
+          setTimeout(hide, 150);
+        }
+      });
+      // Safety: hide overlay if page is shown or after a delay
+      window.addEventListener('pageshow', hide);
+      setTimeout(() => hide(), 5000);
+    })();
+
+    // AJAX pagination for the current table-based games view
+    (function(){
+      window.loadGamesPage = function(file, page, btn) {
+        // Prevent loading if page not fully loaded
+        if (!window.pageFullyLoaded) {
+          console.log('[RGSX] Page not fully loaded yet, ignoring pagination request for', file);
+          return;
+        }
+
+        let target = null;
+        let loading = null;
+
+        if (btn && typeof btn.closest === 'function') {
+          target = btn.closest('[id^="games-body-"]');
+          if (target) {
+            const gamesRow = target.closest('tr[id^="games-row-"]');
+            if (gamesRow) {
+              loading = gamesRow.querySelector('[id^="loading-games-"]');
+            }
+          }
+        }
+
+
+        if (!target) return;
+        if (loading) loading.style.display = 'block';
+        console.log('[RGSX] Loading games page', page, 'for', file);
+        requestGamesTable(file, target, loading, page);
+      };
+    })();
+
+    // Global list to track active requests
+    window.activeRequests = new Set();
+    window.pageFullyLoaded = false;
+    
+    // Mark page as fully loaded after DOM is ready
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(() => {
+        window.pageFullyLoaded = true;
+        console.log('[RGSX] Page fully loaded, requests allowed');
+      }, 1000); // Give some time for everything to settle
+    });
+    
+    // Cancel all active requests when changing tabs
+    document.querySelectorAll('[data-bs-toggle="tab"]').forEach(tabButton => {
+      tabButton.addEventListener('click', () => {
+        window.activeRequests.forEach(controller => {
+          try { controller.abort(); } catch(e) {}
+        });
+        window.activeRequests.clear();
+        console.log('[RGSX] Cancelled all active requests due to tab change');
+      });
+    });
+
+    // Ensure overlay is hidden on initial load
+    document.addEventListener('DOMContentLoaded', hideOverlay);
+
+    // Hide overlay after ZIP or JSON download (systems_download/build_zip)
+    const downloadFrame = document.getElementById('downloadFrame');
+    if (downloadFrame) {
+      downloadFrame.addEventListener('load', function() {
+        setTimeout(() => {
+          hideOverlay();
+        }, 300);
+      });
+    }
+  </script>
+</body>
+</html>
