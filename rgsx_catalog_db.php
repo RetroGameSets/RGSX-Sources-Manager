@@ -50,13 +50,23 @@ function rgsx_manager_setting(string $name, string $legacyName = '', string $def
 }
 
 function rgsx_mysql_config(): array {
-  $sessionPassword = (string)($_SESSION['rgsx_manager_mysql_password'] ?? '');
+  $sessionConnection = $_SESSION['rgsx_manager_mysql_connection'] ?? [];
+  if (!is_array($sessionConnection)) {
+    $sessionConnection = [];
+  }
+  $setting = static function(string $key, string $name, string $legacyName, string $default = '') use ($sessionConnection): string {
+    $value = $sessionConnection[$key] ?? null;
+    if (is_scalar($value) && trim((string)$value) !== '') {
+      return trim((string)$value);
+    }
+    return trim(rgsx_manager_setting($name, $legacyName, $default));
+  };
   return [
-    'host' => trim(rgsx_manager_setting('RGSX_MYSQL_HOST', 'DB_HOST', 'retrogamesets.fr')),
-    'port' => max(1, (int)rgsx_manager_setting('RGSX_MYSQL_PORT', 'DB_PORT', '3306')),
-    'database' => trim(rgsx_manager_setting('RGSX_MYSQL_DATABASE', 'DB_NAME', 'mbco1317_rgsx')),
-    'user' => trim(rgsx_manager_setting('RGSX_MYSQL_USER', 'DB_USER', 'mbco1317_rgsx_admin')),
-    'password' => $sessionPassword,
+    'host' => $setting('host', 'RGSX_MYSQL_HOST', 'DB_HOST'),
+    'port' => max(1, min(65535, (int)$setting('port', 'RGSX_MYSQL_PORT', 'DB_PORT', '3306'))),
+    'database' => $setting('database', 'RGSX_MYSQL_DATABASE', 'DB_NAME'),
+    'user' => $setting('user', 'RGSX_MYSQL_USER', 'DB_USER'),
+    'password' => (string)($_SESSION['rgsx_manager_mysql_password'] ?? ''),
     'ssl_ca' => trim(rgsx_manager_setting('RGSX_MYSQL_SSL_CA', 'DB_SSL_CA')),
   ];
 }
@@ -127,6 +137,7 @@ function rgsx_mysql_pdo(): PDO {
     "CREATE TABLE IF NOT EXISTS download_history (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, platform VARCHAR(255) NOT NULL DEFAULT '', game_name VARCHAR(512) NOT NULL DEFAULT '', status VARCHAR(64) NOT NULL DEFAULT '', url VARCHAR(2048) NOT NULL DEFAULT '', progress DOUBLE NOT NULL DEFAULT 0, timestamp VARCHAR(64) NOT NULL DEFAULT '', message TEXT NOT NULL, task_id VARCHAR(255) NOT NULL DEFAULT '', metadata_json LONGTEXT NOT NULL, created_at VARCHAR(32) NOT NULL, updated_at VARCHAR(32) NOT NULL)",
     "CREATE TABLE IF NOT EXISTS downloaded_games (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, platform VARCHAR(255) NOT NULL, game_name VARCHAR(512) NOT NULL, metadata_json LONGTEXT NOT NULL, created_at VARCHAR(32) NOT NULL, updated_at VARCHAR(32) NOT NULL, UNIQUE KEY uq_downloaded_games (platform, game_name(190)))",
     "CREATE TABLE IF NOT EXISTS catalog_changes (sequence BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, entity_type VARCHAR(32) NOT NULL, entity_id BIGINT UNSIGNED NOT NULL, platform_id BIGINT UNSIGNED NULL, operation VARCHAR(16) NOT NULL, changed_at VARCHAR(32) NOT NULL, KEY idx_catalog_changes_sequence (sequence)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS catalog_visibility (entity_type VARCHAR(16) NOT NULL, entity_key VARCHAR(255) NOT NULL, is_visible TINYINT(1) NOT NULL DEFAULT 1, updated_at VARCHAR(32) NOT NULL, PRIMARY KEY (entity_type, entity_key), KEY idx_catalog_visibility_state (entity_type, is_visible)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
   ];
   foreach ($schema as $statement) {
     $pdo->exec($statement);
@@ -149,7 +160,8 @@ function rgsx_mysql_pdo(): PDO {
       $pdo->exec($statement);
     }
   }
-  $pdo->exec("INSERT INTO schema_meta(meta_key, meta_value) VALUES('schema_version', '4') ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)");
+  $pdo->exec("INSERT INTO schema_meta(meta_key, meta_value) VALUES('schema_version', '5') ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)");
+  $pdo->exec("INSERT INTO schema_meta(meta_key, meta_value) VALUES('catalog_visibility_revision', '0') ON DUPLICATE KEY UPDATE meta_value = meta_value");
   $GLOBALS['rgsx_catalog_db_pdo'] = $pdo;
   return $pdo;
 }
@@ -184,8 +196,14 @@ function rgsx_catalog_db_platforms(): array {
 function rgsx_catalog_db_platform_summary(string $search = '', int $limit = 200, int $offset = 0): array {
   $limit = max(1, min($limit, 1000));
   $offset = max(0, $offset);
-  $sql = 'SELECT p.id, p.platform_name, p.source, p.file_name, p.folder, p.platform_image, p.sort_order, p.updated_at, COUNT(g.id) AS game_count
-          FROM platforms p LEFT JOIN games g ON g.platform_id = p.id';
+  $sql = "SELECT p.id, p.platform_name, p.source, p.file_name, p.folder, p.platform_image, p.sort_order, p.updated_at,
+                 COALESCE(MAX(pv.is_visible), 1) AS platform_visible,
+                 COALESCE(MAX(sv.is_visible), 1) AS source_visible,
+                 COUNT(g.id) AS game_count
+          FROM platforms p
+          LEFT JOIN games g ON g.platform_id = p.id
+          LEFT JOIN catalog_visibility pv ON pv.entity_type = 'platform' AND pv.entity_key = CAST(p.id AS CHAR)
+          LEFT JOIN catalog_visibility sv ON sv.entity_type = 'source' AND sv.entity_key = p.source";
   $params = [];
   if ($search !== '') {
     $sql .= ' WHERE p.platform_name LIKE ? OR p.source LIKE ? OR p.folder LIKE ?';
@@ -203,6 +221,62 @@ function rgsx_catalog_db_platform_summary(string $search = '', int $limit = 200,
   $stmt->bindValue(count($params) + 2, $offset, PDO::PARAM_INT);
   $stmt->execute();
   return $stmt->fetchAll() ?: [];
+}
+
+function rgsx_catalog_db_source_summary(): array {
+  $sql = "SELECT p.source, COUNT(p.id) AS platform_count, COALESCE(MAX(v.is_visible), 1) AS is_visible
+          FROM platforms p
+          LEFT JOIN catalog_visibility v ON v.entity_type = 'source' AND v.entity_key = p.source
+          WHERE TRIM(p.source) <> ''
+          GROUP BY p.source
+          ORDER BY p.source";
+  return rgsx_catalog_db()->query($sql)->fetchAll() ?: [];
+}
+
+function rgsx_catalog_db_set_visibility(string $entityType, string $entityKey, bool $visible): void {
+  $entityKey = trim($entityKey);
+  if (!in_array($entityType, ['source', 'platform'], true) || $entityKey === '') {
+    throw new InvalidArgumentException('Invalid catalog visibility target.');
+  }
+  if ($entityType === 'platform' && (!ctype_digit($entityKey) || (int)$entityKey < 1)) {
+    throw new InvalidArgumentException('Invalid platform ID.');
+  }
+
+  $pdo = rgsx_catalog_db();
+  $exists = $entityType === 'source'
+    ? $pdo->prepare("SELECT 1 FROM platforms WHERE source = ? LIMIT 1")
+    : $pdo->prepare("SELECT 1 FROM platforms WHERE id = ? LIMIT 1");
+  $exists->execute([$entityKey]);
+  if ($exists->fetchColumn() === false) {
+    throw new InvalidArgumentException('Visibility target no longer exists.');
+  }
+
+  $currentStatement = $pdo->prepare('SELECT is_visible FROM catalog_visibility WHERE entity_type = ? AND entity_key = ?');
+  $currentStatement->execute([$entityType, $entityKey]);
+  $currentValue = $currentStatement->fetchColumn();
+  $currentVisible = $currentValue === false ? true : (bool)$currentValue;
+  if ($currentVisible === $visible) {
+    return;
+  }
+
+  $pdo->beginTransaction();
+  try {
+    $now = rgsx_catalog_db_now();
+    $pdo->prepare(
+      'INSERT INTO catalog_visibility(entity_type, entity_key, is_visible, updated_at) VALUES(?, ?, ?, ?) '
+      . 'ON DUPLICATE KEY UPDATE is_visible = VALUES(is_visible), updated_at = VALUES(updated_at)'
+    )->execute([$entityType, $entityKey, $visible ? 1 : 0, $now]);
+    $pdo->exec(
+      "UPDATE schema_meta SET meta_value = CAST(meta_value AS UNSIGNED) + 1 "
+      . "WHERE meta_key = 'catalog_visibility_revision'"
+    );
+    $pdo->commit();
+  } catch (Throwable $exception) {
+    if ($pdo->inTransaction()) {
+      $pdo->rollBack();
+    }
+    throw $exception;
+  }
 }
 
 function rgsx_catalog_db_platform_count(string $search = ''): int {

@@ -146,18 +146,33 @@ function catalog_api_int(string $key, int $default, int $minimum, int $maximum):
 }
 
 function catalog_api_entity(string $entity): array {
+  $visiblePlatform = "NOT EXISTS (
+    SELECT 1 FROM catalog_visibility pv
+    WHERE pv.entity_type = 'platform' AND pv.entity_key = CAST(p.id AS CHAR) AND pv.is_visible = 0
+  ) AND NOT EXISTS (
+    SELECT 1 FROM catalog_visibility sv
+    WHERE sv.entity_type = 'source' AND sv.entity_key = p.source AND sv.is_visible = 0
+  )";
   $definitions = [
     'platforms' => [
-      'table' => 'platforms',
-      'select' => 'id, platform_name, source, file_name, folder, platform_image, sort_order, created_at, updated_at',
+      'from' => 'platforms p',
+      'id_column' => 'p.id',
+      'select' => 'p.id AS id, p.platform_name, p.source, p.file_name, p.folder, p.platform_image, p.sort_order, p.created_at, p.updated_at',
+      'visible' => $visiblePlatform,
     ],
     'games' => [
-      'table' => 'games',
-      'select' => 'id, platform_id, name, url, size, size_bytes, display_name, sort_order, metadata_json, created_at, updated_at',
+      'from' => 'games g JOIN platforms p ON p.id = g.platform_id',
+      'id_column' => 'g.id',
+      'platform_column' => 'g.platform_id',
+      'select' => 'g.id AS id, g.platform_id, g.name, g.url, g.size, g.size_bytes, g.display_name, g.sort_order, g.metadata_json, g.created_at, g.updated_at',
+      'visible' => $visiblePlatform,
     ],
     'platform_assets' => [
-      'table' => 'platform_assets',
-      'select' => 'id, platform_id, asset_type, file_name, mime_type, data, metadata_json, created_at, updated_at',
+      'from' => 'platform_assets a JOIN platforms p ON p.id = a.platform_id',
+      'id_column' => 'a.id',
+      'platform_column' => 'a.platform_id',
+      'select' => 'a.id AS id, a.platform_id, a.asset_type, a.file_name, a.mime_type, a.data, a.metadata_json, a.created_at, a.updated_at',
+      'visible' => $visiblePlatform,
     ],
   ];
   if (!isset($definitions[$entity])) {
@@ -203,13 +218,20 @@ try {
   $pdo = catalog_api_db();
   if ($action === 'manifest') {
     $sequence = (int)$pdo->query('SELECT COALESCE(MAX(sequence), 0) FROM catalog_changes')->fetchColumn();
-    $platforms = (int)$pdo->query('SELECT COUNT(*) FROM platforms')->fetchColumn();
-    $games = (int)$pdo->query('SELECT COUNT(*) FROM games')->fetchColumn();
+    $visibility = catalog_api_entity('platforms')['visible'];
+    $platforms = (int)$pdo->query('SELECT COUNT(*) FROM platforms p WHERE ' . $visibility)->fetchColumn();
+    $games = (int)$pdo->query(
+      'SELECT COUNT(*) FROM games g JOIN platforms p ON p.id = g.platform_id WHERE ' . $visibility
+    )->fetchColumn();
+    $visibilityRevision = (int)$pdo->query(
+      "SELECT meta_value FROM schema_meta WHERE meta_key = 'catalog_visibility_revision'"
+    )->fetchColumn();
     catalog_api_response(200, [
       'success' => true,
       'sequence' => $sequence,
       'platforms' => $platforms,
       'games' => $games,
+      'visibility_revision' => $visibilityRevision,
     ]);
   }
 
@@ -219,10 +241,27 @@ try {
     $after = catalog_api_int('after', 0, 0, PHP_INT_MAX);
     $maximumLimit = $entity === 'platform_assets' ? 4 : 2000;
     $limit = catalog_api_int('limit', min(1000, $maximumLimit), 1, $maximumLimit);
-    $sql = 'SELECT ' . $definition['select'] . ' FROM ' . $definition['table'] . ' WHERE id > ? ORDER BY id ASC LIMIT ?';
+    $platformId = isset($_GET['platform_id'])
+      ? catalog_api_int('platform_id', 1, 1, PHP_INT_MAX)
+      : null;
+    if ($platformId !== null && !isset($definition['platform_column'])) {
+      catalog_api_response(400, ['success' => false, 'error' => 'platform_filter_not_supported']);
+    }
+    $where = $definition['id_column'] . ' > ? AND ' . $definition['visible'];
+    if ($platformId !== null) {
+      $where .= ' AND ' . $definition['platform_column'] . ' = ?';
+    }
+    $sql = 'SELECT ' . $definition['select'] . ' FROM ' . $definition['from']
+      . ' WHERE ' . $where
+      . ' ORDER BY ' . $definition['id_column'] . ' ASC LIMIT ?';
     $statement = $pdo->prepare($sql);
     $statement->bindValue(1, $after, PDO::PARAM_INT);
-    $statement->bindValue(2, $limit, PDO::PARAM_INT);
+    $limitParameter = 2;
+    if ($platformId !== null) {
+      $statement->bindValue(2, $platformId, PDO::PARAM_INT);
+      $limitParameter = 3;
+    }
+    $statement->bindValue($limitParameter, $limit, PDO::PARAM_INT);
     $statement->execute();
     $items = [];
     $nextAfter = $after;
@@ -254,12 +293,7 @@ try {
   if ($hasMore) {
     array_pop($changes);
   }
-  $entityTables = ['platform' => 'platforms', 'game' => 'games', 'platform_asset' => 'platform_assets'];
-  $entityColumns = [
-    'platform' => 'id, platform_name, source, file_name, folder, platform_image, sort_order, created_at, updated_at',
-    'game' => 'id, platform_id, name, url, size, size_bytes, display_name, sort_order, metadata_json, created_at, updated_at',
-    'platform_asset' => 'id, platform_id, asset_type, file_name, mime_type, data, metadata_json, created_at, updated_at',
-  ];
+  $entityNames = ['platform' => 'platforms', 'game' => 'games', 'platform_asset' => 'platform_assets'];
   $responseChanges = [];
   $responseBytes = 0;
   foreach ($changes as $change) {
@@ -268,12 +302,16 @@ try {
     $change['platform_id'] = $change['platform_id'] === null ? null : (int)$change['platform_id'];
     $change['data'] = null;
     $type = (string)$change['entity_type'];
-    if (($change['operation'] ?? '') === 'upsert' && isset($entityTables[$type])) {
-      $entityStatement = $pdo->prepare('SELECT ' . $entityColumns[$type] . ' FROM ' . $entityTables[$type] . ' WHERE id = ?');
+    if (($change['operation'] ?? '') === 'upsert' && isset($entityNames[$type])) {
+      $entity = $entityNames[$type];
+      $definition = catalog_api_entity($entity);
+      $entityStatement = $pdo->prepare(
+        'SELECT ' . $definition['select'] . ' FROM ' . $definition['from']
+        . ' WHERE ' . $definition['id_column'] . ' = ? AND ' . $definition['visible']
+      );
       $entityStatement->execute([$change['entity_id']]);
       $data = $entityStatement->fetch();
       if (is_array($data)) {
-        $entity = $type === 'platform_asset' ? 'platform_assets' : ($type === 'game' ? 'games' : 'platforms');
         $change['data'] = catalog_api_encode_row($entity, $data);
       }
     }

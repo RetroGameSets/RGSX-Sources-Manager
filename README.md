@@ -27,7 +27,7 @@ Le poste doit pouvoir joindre MariaDB; pour un accès distant, l’hébergeur do
 2. Ouvrir le dossier et exécuter `RGSX_Manager.bat`.
 3. Le script démarre un petit serveur PHP intégré sur `127.0.0.1:8088` et ouvre votre navigateur à l’URL:
   - `http://127.0.0.1:8088/data/rgsx_database_manager.php`
-4. Connectez-vous avec le mot de passe du compte administrateur MariaDB du Manager, puis utilisez **Plateformes**, **Jeux** et **Scraper**. Le Manager modifie directement le catalogue central.
+4. Saisissez l’hôte, le port, la base MariaDB, l’utilisateur et son mot de passe, puis utilisez **Plateformes**, **Jeux** et **Scraper**. Cochez l’option de mémorisation pour enregistrer la connexion dans un cookie chiffré de ce navigateur.
 
 Notes:
 - Si un pare-feu demande une autorisation pour PHP, acceptez l’accès local.
@@ -55,27 +55,29 @@ Remarques:
 
 ### Manager Windows local connecté à MariaDB
 
-Lancez `RGSX_Manager.bat`, puis saisissez le mot de passe du compte administrateur dans la page de connexion. Le mot de passe n’est pas écrit dans un fichier ni dans le cookie : il reste dans la session PHP locale. La session est mémorisée pendant 30 jours sur ce navigateur ; utilisez **Se déconnecter** pour l’effacer.
+Lancez `RGSX_Manager.bat`, puis renseignez l’hôte, le port, le nom de base, l’utilisateur et le mot de passe MariaDB dans la page de connexion. L’option de mémorisation conserve ces paramètres dans un cookie chiffré et protégé contre l’accès JavaScript pendant 30 jours ; sans cette option, la session de connexion reste limitée à la session du navigateur. Utilisez **Se déconnecter / changer de base** pour fermer la connexion et saisir un autre serveur.
 
-Par défaut, le Manager utilise `retrogamesets.fr:3306`, la base `mbco1317_rgsx` et l’utilisateur `mbco1317_rgsx_admin`. L’écran doit afficher `MariaDB Sources Manager`, `mysql://...` et les compteurs de la base centrale. Le compte doit disposer des droits d’écriture et de création des triggers ; le compte de lecture seule de l’API ne convient pas au Manager.
+Le Manager n’intègre aucun hôte, nom de base ni utilisateur par défaut. Des variables d’environnement `RGSX_MYSQL_HOST`, `RGSX_MYSQL_PORT`, `RGSX_MYSQL_DATABASE` et `RGSX_MYSQL_USER` peuvent préremplir le formulaire. Le compte doit disposer des droits d’écriture et de création des triggers ; le compte de lecture seule de l’API ne convient pas au Manager.
 
-En production, le Manager utilise la base MySQL centrale avec le compte administrateur. Configurez le processus PHP avec:
+Dans **Plateformes**, les commandes de visibilité masquent temporairement une source entière ou une plateforme du catalogue distribué à RGSX. Elles ne suppriment aucune donnée MariaDB ; à la prochaine synchronisation, le client retire uniquement les plateformes masquées et leurs données. Lorsqu’une plateforme est réactivée, il télécharge les données de ces seules plateformes.
+
+Pour préremplir les paramètres dans un déploiement serveur, configurez le processus PHP avec vos propres valeurs:
 
 ```sh
-export RGSX_MYSQL_HOST=retrogamesets.fr
+export RGSX_MYSQL_HOST=db.example.tld
 export RGSX_MYSQL_PORT=3306
-export RGSX_MYSQL_DATABASE=mbco1317_rgsx
-export RGSX_MYSQL_USER=mbco1317_admrgs
+export RGSX_MYSQL_DATABASE=your_database
+export RGSX_MYSQL_USER=your_manager_user
 export RGSX_MYSQL_SSL_CA=/etc/ssl/certs/mysql-ca.pem
 ```
 
-Le mot de passe administrateur du Manager est saisi dans sa page de connexion et conservé uniquement dans la session PHP. Le serveur PHP doit avoir `pdo_mysql` activé. Les formulaires POST du Manager sont protégés par un jeton CSRF de session.
+Le mot de passe est demandé à la connexion et n’est prérempli que si l’option de mémorisation a été cochée. Le cookie est chiffré avec une clé conservée hors de la racine Web ; configurez `RGSX_MANAGER_REMEMBER_KEY` pour garder une clé stable sur un serveur dont le dossier temporaire est nettoyé. Le serveur PHP doit avoir `pdo_mysql` et `openssl` activés. Les formulaires POST du Manager sont protégés par un jeton CSRF de session.
 
 ### API de catalogue pour RGSX
 
 Les clients RGSX ne se connectent jamais à MariaDB et ne reçoivent aucun identifiant SQL. Ils appellent `https://votre-domaine.tld/rgsx/rgsx_catalog_api.php` en HTTPS. L’API n’accepte que `GET` et trois actions autorisées (`manifest`, `snapshot`, `changes`); les requêtes utilisent des paramètres préparés. Le catalogue est public en lecture seule et paginé, avec une limitation de débit; aucun jeton embarqué dans l’application n’est considéré comme un secret.
 
-Créez un compte dédié sur le serveur, avec `SELECT` uniquement sur les tables nécessaires (`platforms`, `games`, `platform_assets`, `catalog_changes`). Configurez ses identifiants dans l’environnement PHP ou un fichier secret hors racine web :
+Créez un compte dédié sur le serveur, avec `SELECT` uniquement sur les tables nécessaires (`platforms`, `games`, `platform_assets`, `catalog_changes`, `catalog_visibility`, `schema_meta`). Configurez ses identifiants dans l’environnement PHP ou un fichier secret hors racine web :
 
 ```sh
 export RGSX_CATALOG_API_ENV_FILE=/srv/rgsx/secrets/catalog-api.env

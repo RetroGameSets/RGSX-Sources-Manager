@@ -28,11 +28,13 @@ Steps:
 2. Open the folder and run `RGSX_Manager.bat`.
 3. The script starts a small built‑in PHP server on `127.0.0.1:8088` and opens your browser at:
   - `http://127.0.0.1:8088/data/rgsx_database_manager.php`
-4. Sign in with the Manager's MariaDB administrator password, then use Platforms, Games and Scrape.
+4. Enter the MariaDB host, port, database, user, and password, then use Platforms, Games, and Scrape. Select the remember option to save the connection in an encrypted cookie in this browser.
 
 Notes:
 - If your firewall prompts for PHP access, allow local access.
 - The built‑in server stops when you close the window that opened ("PHP Server").
+- The Manager has no built-in database host, name, or user. `RGSX_MYSQL_HOST`, `RGSX_MYSQL_PORT`, `RGSX_MYSQL_DATABASE`, and `RGSX_MYSQL_USER` may optionally prefill the login form. The password is prefilled only when the remember option is selected.
+- Remembered connection cookies are encrypted. Set `RGSX_MANAGER_REMEMBER_KEY` to keep a stable encryption key on hosted servers whose temporary directory is cleared; PHP must have `pdo_mysql` and `openssl` enabled.
 
 ---
 
@@ -54,7 +56,9 @@ Remarks:
 
 RGSX clients must not receive MySQL credentials or connect to MariaDB directly. Deploy `rgsx_catalog_api.php` at `https://your-domain.tld/rgsx/rgsx_catalog_api.php`. The API only accepts `GET` requests for the allowlisted `manifest`, `snapshot`, and `changes` actions; it uses prepared SQL, paginates snapshots/deltas, returns no write operation, and applies a per-IP rate limit. Catalog data is intentionally public and read-only, so no hard-coded client token is treated as a secret.
 
-Configure a separate, server-only database user with `SELECT` privileges only on `platforms`, `games`, `platform_assets`, and `catalog_changes`:
+In the Manager's **Platforms** tab, visibility controls temporarily hide an entire source or an individual platform from the catalog distributed to RGSX. MariaDB data is retained; on the next synchronization, clients remove only the hidden platforms and their data. When a platform is re-enabled, they download data only for those platforms.
+
+Configure a separate, server-only database user with `SELECT` privileges only on `platforms`, `games`, `platform_assets`, `catalog_changes`, `catalog_visibility`, and `schema_meta`:
 
 ```sh
 export RGSX_CATALOG_API_ENV_FILE=/srv/rgsx/secrets/catalog-api.env

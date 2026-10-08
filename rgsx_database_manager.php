@@ -54,6 +54,220 @@ function rgsx_db_csrf_field(): string {
   return '<input type="hidden" name="csrf_token" value="' . rgsx_db_h(rgsx_db_csrf_token()) . '">';
 }
 
+function rgsx_db_validate_connection(array $values): array {
+  $hostValue = $values['host'] ?? null;
+  $databaseValue = $values['database'] ?? null;
+  $userValue = $values['user'] ?? null;
+  $portRaw = $values['port'] ?? null;
+  if (!is_string($hostValue) || !is_string($databaseValue) || !is_string($userValue)
+    || (!is_string($portRaw) && !is_int($portRaw))) {
+    throw new InvalidArgumentException('Paramètres de connexion invalides.');
+  }
+  $host = trim($hostValue);
+  $database = trim($databaseValue);
+  $user = trim($userValue);
+  $portValue = trim((string)$portRaw);
+  if ($host === '' || strlen($host) > 255 || preg_match('/[\x00-\x20;\/]/', $host)) {
+    throw new InvalidArgumentException('Adresse du serveur invalide.');
+  }
+  if ($database === '' || strlen($database) > 64 || preg_match('/[\x00-\x20;]/', $database)) {
+    throw new InvalidArgumentException('Nom de base invalide.');
+  }
+  if ($user === '' || strlen($user) > 128 || preg_match('/[\x00-\x20;]/', $user)) {
+    throw new InvalidArgumentException('Nom d’utilisateur MariaDB invalide.');
+  }
+  if (!preg_match('/^\d{1,5}$/', $portValue) || (int)$portValue < 1 || (int)$portValue > 65535) {
+    throw new InvalidArgumentException('Le port doit être compris entre 1 et 65535.');
+  }
+  return ['host' => $host, 'port' => $portValue, 'database' => $database, 'user' => $user];
+}
+
+function rgsx_db_remember_cookie_path(): string {
+  $script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '/'));
+  $directory = rtrim(dirname($script), '/');
+  return $directory === '' ? '/' : $directory . '/';
+}
+
+function rgsx_db_remember_cookie_options(int $expires): array {
+  $https = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+    || (string)($_SERVER['SERVER_PORT'] ?? '') === '443';
+  return [
+    'expires' => $expires,
+    'path' => rgsx_db_remember_cookie_path(),
+    'secure' => $https,
+    'httponly' => true,
+    'samesite' => 'Strict',
+  ];
+}
+
+function rgsx_db_set_session_cookie_lifetime(int $lifetime): void {
+  $parameters = session_get_cookie_params();
+  $options = [
+    'expires' => $lifetime > 0 ? time() + $lifetime : 0,
+    'path' => (string)($parameters['path'] ?? '/'),
+    'secure' => (bool)($parameters['secure'] ?? false),
+    'httponly' => (bool)($parameters['httponly'] ?? true),
+    'samesite' => (string)($parameters['samesite'] ?? 'Lax'),
+  ];
+  if ((string)($parameters['domain'] ?? '') !== '') {
+    $options['domain'] = (string)$parameters['domain'];
+  }
+  if (!setcookie(session_name(), session_id(), $options)) {
+    throw new RuntimeException('Impossible de régler la durée du cookie de session.');
+  }
+}
+
+function rgsx_db_clear_remembered_connection(): void {
+  if (!setcookie('rgsx_manager_connection', '', rgsx_db_remember_cookie_options(time() - 3600))) {
+    throw new RuntimeException('Impossible de supprimer le cookie de connexion mémorisée.');
+  }
+  unset($_COOKIE['rgsx_manager_connection']);
+}
+
+function rgsx_db_remember_key(): string {
+  if (!function_exists('openssl_encrypt') || !function_exists('openssl_decrypt')) {
+    throw new RuntimeException('OpenSSL est requis pour chiffrer la connexion mémorisée.');
+  }
+  $configuredKey = trim(rgsx_manager_setting('RGSX_MANAGER_REMEMBER_KEY'));
+  if ($configuredKey !== '') {
+    return hash('sha256', $configuredKey, true);
+  }
+
+  $identity = realpath(__DIR__) ?: __DIR__;
+  $directory = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR)
+    . DIRECTORY_SEPARATOR . 'rgsx-manager-' . substr(hash('sha256', $identity), 0, 24);
+  if (is_link($directory)) {
+    throw new RuntimeException('Répertoire de clé de connexion non sécurisé.');
+  }
+  if (!is_dir($directory) && !@mkdir($directory, 0700) && !is_dir($directory)) {
+    throw new RuntimeException('Impossible de créer le répertoire privé de clé de connexion.');
+  }
+  if (DIRECTORY_SEPARATOR !== '\\' && !@chmod($directory, 0700)) {
+    throw new RuntimeException('Impossible de protéger le répertoire privé de clé de connexion.');
+  }
+
+  $keyPath = $directory . DIRECTORY_SEPARATOR . 'remember.key';
+  if (is_link($keyPath)) {
+    throw new RuntimeException('Fichier de clé de connexion non sécurisé.');
+  }
+  $handle = @fopen($keyPath, 'c+b');
+  if ($handle === false) {
+    throw new RuntimeException('Impossible d’ouvrir le fichier privé de clé de connexion.');
+  }
+  try {
+    if (!flock($handle, LOCK_EX)) {
+      throw new RuntimeException('Impossible de verrouiller la clé de connexion.');
+    }
+    rewind($handle);
+    $key = stream_get_contents($handle);
+    if (!is_string($key)) {
+      throw new RuntimeException('Impossible de lire la clé de connexion.');
+    }
+    if ($key === '') {
+      $key = random_bytes(32);
+      rewind($handle);
+      if (fwrite($handle, $key) !== 32 || !ftruncate($handle, 32) || !fflush($handle)) {
+        throw new RuntimeException('Impossible d’enregistrer la clé de connexion.');
+      }
+    } elseif (strlen($key) !== 32) {
+      throw new RuntimeException('Le fichier de clé de connexion est invalide.');
+    }
+    flock($handle, LOCK_UN);
+  } finally {
+    fclose($handle);
+  }
+  if (DIRECTORY_SEPARATOR !== '\\' && !@chmod($keyPath, 0600)) {
+    throw new RuntimeException('Impossible de protéger le fichier privé de clé de connexion.');
+  }
+  return $key;
+}
+
+function rgsx_db_save_remembered_connection(array $connection): void {
+  $password = (string)($connection['password'] ?? '');
+  try {
+    $payload = json_encode([
+      'version' => 1,
+      'host' => $connection['host'],
+      'port' => (string)$connection['port'],
+      'database' => $connection['database'],
+      'user' => $connection['user'],
+      'password' => $password,
+    ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+  } catch (JsonException $exception) {
+    throw new RuntimeException('Les paramètres ne peuvent pas être encodés pour le cookie.', 0, $exception);
+  }
+  $nonce = random_bytes(12);
+  $tag = '';
+  $ciphertext = openssl_encrypt(
+    $payload,
+    'aes-256-gcm',
+    rgsx_db_remember_key(),
+    OPENSSL_RAW_DATA,
+    $nonce,
+    $tag,
+    'rgsx-manager-connection-v1',
+    16
+  );
+  if (!is_string($ciphertext)) {
+    throw new RuntimeException('Impossible de chiffrer la connexion mémorisée.');
+  }
+  $token = rtrim(strtr(base64_encode($nonce . $tag . $ciphertext), '+/', '-_'), '=');
+  if (strlen($token) > 3800) {
+    throw new RuntimeException('Les paramètres de connexion dépassent la taille maximale du cookie.');
+  }
+  if (!setcookie('rgsx_manager_connection', $token, rgsx_db_remember_cookie_options(time() + 60 * 60 * 24 * 30))) {
+    throw new RuntimeException('Impossible d’enregistrer le cookie de connexion mémorisée.');
+  }
+  $_COOKIE['rgsx_manager_connection'] = $token;
+}
+
+function rgsx_db_read_remembered_connection(): ?array {
+  $token = $_COOKIE['rgsx_manager_connection'] ?? '';
+  if (!is_string($token) || $token === '') {
+    return null;
+  }
+  $invalidate = static function(): ?array {
+    rgsx_db_clear_remembered_connection();
+    $GLOBALS['rgsx_db_remember_error'] = 'La connexion mémorisée est invalide ou illisible. Saisissez à nouveau les paramètres.';
+    return null;
+  };
+  if (strlen($token) > 3800) {
+    return $invalidate();
+  }
+  $encoded = strtr($token, '-_', '+/');
+  $encoded .= str_repeat('=', (4 - strlen($encoded) % 4) % 4);
+  $raw = base64_decode($encoded, true);
+  if (!is_string($raw) || strlen($raw) < 29) {
+    return $invalidate();
+  }
+  $plaintext = openssl_decrypt(
+    substr($raw, 28),
+    'aes-256-gcm',
+    rgsx_db_remember_key(),
+    OPENSSL_RAW_DATA,
+    substr($raw, 0, 12),
+    substr($raw, 12, 16),
+    'rgsx-manager-connection-v1'
+  );
+  if (!is_string($plaintext)) {
+    return $invalidate();
+  }
+  $payload = json_decode($plaintext, true);
+  if (!is_array($payload) || ($payload['version'] ?? null) !== 1 || !is_string($payload['password'] ?? null)) {
+    return $invalidate();
+  }
+  try {
+    $connection = rgsx_db_validate_connection($payload);
+  } catch (InvalidArgumentException) {
+    return $invalidate();
+  }
+  if (strlen($payload['password']) > 2048) {
+    return $invalidate();
+  }
+  $connection['password'] = $payload['password'];
+  return $connection;
+}
+
 function rgsx_db_store_image_upload(string $field): ?array {
   $upload = $_FILES[$field] ?? null;
   if (!is_array($upload) || (int)($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
@@ -324,6 +538,19 @@ function rgsx_db_process_action(string $action): void {
       rgsx_db_flash('Plateforme et ses jeux supprimés.');
       rgsx_db_redirect('platforms');
       break;
+    case 'catalog_visibility':
+      $entityType = (string)($_POST['entity_type'] ?? '');
+      $entityKey = (string)($_POST['entity_key'] ?? '');
+      $visibleValue = (string)($_POST['visible'] ?? '');
+      if (!in_array($visibleValue, ['0', '1'], true)) {
+        throw new InvalidArgumentException('État de visibilité invalide.');
+      }
+      $visible = $visibleValue === '1';
+      rgsx_catalog_db_set_visibility($entityType, $entityKey, $visible);
+      $target = $entityType === 'source' ? 'Source' : 'Plateforme';
+      rgsx_db_flash($target . ($visible ? ' réactivée.' : ' masquée du catalogue RGSX.'));
+      rgsx_db_redirect('platforms');
+      break;
     case 'game_add':
       rgsx_catalog_db_add_game((int)($_POST['platform_id'] ?? 0), (string)($_POST['game_name'] ?? ''), (string)($_POST['game_url'] ?? ''), (string)($_POST['game_size'] ?? ''));
       rgsx_db_flash('Jeu ajouté ou mis à jour.');
@@ -369,45 +596,156 @@ function rgsx_db_process_action(string $action): void {
 
 function rgsx_db_login_page(string $error = ''): never {
   $config = rgsx_mysql_config();
+  $hasSessionConnection = is_array($_SESSION['rgsx_manager_mysql_connection'] ?? null);
+  $remembered = null;
+  $rememberError = (string)($GLOBALS['rgsx_db_remember_error'] ?? '');
+  try {
+    $remembered = rgsx_db_read_remembered_connection();
+  } catch (RuntimeException $exception) {
+    $rememberError = 'Impossible de lire la connexion mémorisée : ' . $exception->getMessage();
+  }
+  if (!$hasSessionConnection && $remembered !== null) {
+    $config = array_merge($config, $remembered);
+  }
   $safeError = $error !== '' ? '<div class="alert alert-danger">' . rgsx_db_h($error) . '</div>' : '';
-  echo '<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connexion RGSX Manager</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"><style>body{background:#f4f7f5}.login{max-width:480px;margin:12vh auto}.panel{background:#fff;border:1px solid #d7e2df;border-radius:14px;box-shadow:0 12px 35px rgba(23,33,43,.08)}</style></head><body><main class="login px-3"><section class="panel p-4"><div class="text-uppercase small fw-semibold text-secondary">RGSX / catalogue central</div><h1 class="h3 mb-2">Connexion MariaDB</h1><p class="text-secondary">Mot de passe du compte administrateur du Manager.</p>' . $safeError . '<form method="post">' . rgsx_db_csrf_field() . '<input type="hidden" name="action" value="manager_login"><label class="form-label" for="db_password">Mot de passe</label><input class="form-control mb-3" id="db_password" name="db_password" type="password" autocomplete="current-password" required autofocus><button class="btn btn-primary w-100">Se connecter</button></form><div class="small text-secondary mt-3">Base : <code>' . rgsx_db_h($config['database']) . '</code> · Utilisateur : <code>' . rgsx_db_h($config['user']) . '</code></div></section></main></body></html>';
+  if ($rememberError !== '') {
+    $safeError .= '<div class="alert alert-warning">' . rgsx_db_h($rememberError) . '</div>';
+  }
+  header('Cache-Control: no-store, private');
+  ?>
+  <!doctype html>
+  <html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Connexion RGSX Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>body{background:#f4f7f5}.login{max-width:560px;margin:8vh auto}.panel{background:#fff;border:1px solid #d7e2df;border-radius:14px;box-shadow:0 12px 35px rgba(23,33,43,.08)}</style>
+  </head>
+  <body>
+    <main class="login px-3">
+      <section class="panel p-4">
+        <div class="text-uppercase small fw-semibold text-secondary">RGSX / catalogue central</div>
+        <h1 class="h3 mb-2">Connexion MariaDB</h1>
+        <p class="text-secondary">Saisissez les paramètres de la base et les identifiants du compte Manager.</p>
+        <?php echo $safeError; ?>
+        <form method="post" autocomplete="on">
+          <?php echo rgsx_db_csrf_field(); ?>
+          <input type="hidden" name="action" value="manager_login">
+          <div class="row g-3">
+            <div class="col-sm-8">
+              <label class="form-label" for="mysql_host">Serveur / hôte MariaDB</label>
+              <input class="form-control" id="mysql_host" name="mysql_host" value="<?php echo rgsx_db_h($config['host']); ?>" placeholder="db.example.com" maxlength="255" required autofocus>
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label" for="mysql_port">Port</label>
+              <input class="form-control" id="mysql_port" name="mysql_port" type="number" min="1" max="65535" value="<?php echo (int)$config['port']; ?>" required>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="mysql_database">Base de données</label>
+              <input class="form-control" id="mysql_database" name="mysql_database" value="<?php echo rgsx_db_h($config['database']); ?>" maxlength="64" required>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label" for="mysql_user">Utilisateur</label>
+              <input class="form-control" id="mysql_user" name="mysql_user" value="<?php echo rgsx_db_h($config['user']); ?>" maxlength="128" autocomplete="username" required>
+            </div>
+            <div class="col-12">
+              <label class="form-label" for="db_password">Mot de passe</label>
+              <input class="form-control" id="db_password" name="db_password" type="password" value="<?php echo rgsx_db_h($hasSessionConnection ? '' : ($remembered['password'] ?? '')); ?>" maxlength="2048" autocomplete="current-password" required>
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" id="remember_connection" name="remember_connection" type="checkbox" value="1" <?php echo $remembered !== null ? 'checked' : ''; ?>>
+                <label class="form-check-label" for="remember_connection">Mémoriser cette connexion sur ce navigateur pendant 30 jours</label>
+              </div>
+              <div class="form-text">Les identifiants mémorisés sont chiffrés dans un cookie HttpOnly. Décochez cette case pour ne pas les conserver.</div>
+            </div>
+            <div class="col-12"><button class="btn btn-primary w-100">Se connecter</button></div>
+          </div>
+        </form>
+      </section>
+    </main>
+  </body>
+  </html>
+  <?php
   exit;
 }
 
 function rgsx_db_authenticate_manager(): void {
   if (($_POST['action'] ?? '') === 'manager_logout') {
-    unset($_SESSION['rgsx_manager_mysql_password']);
+    unset($_SESSION['rgsx_manager_mysql_password'], $_SESSION['rgsx_manager_mysql_connection']);
     $GLOBALS['rgsx_catalog_db_pdo'] = null;
     session_regenerate_id(true);
+    try {
+      rgsx_db_set_session_cookie_lifetime(0);
+    } catch (RuntimeException $exception) {
+      rgsx_db_flash('', $exception->getMessage());
+    }
     rgsx_db_redirect('database');
   }
   if (rgsx_mysql_enabled()) {
     return;
   }
   if (($_POST['action'] ?? '') === 'manager_login') {
-    $password = (string)($_POST['db_password'] ?? '');
-    if ($password !== '') {
-      $_SESSION['rgsx_manager_mysql_password'] = $password;
+    $passwordValue = $_POST['db_password'] ?? '';
+    if (!is_string($passwordValue)) {
+      rgsx_db_login_page('Le mot de passe transmis est invalide.');
+    }
+    $password = $passwordValue;
+    try {
+      $connection = rgsx_db_validate_connection([
+        'host' => $_POST['mysql_host'] ?? '',
+        'port' => $_POST['mysql_port'] ?? '',
+        'database' => $_POST['mysql_database'] ?? '',
+        'user' => $_POST['mysql_user'] ?? '',
+      ]);
+    } catch (InvalidArgumentException $exception) {
+      rgsx_db_login_page($exception->getMessage());
+    }
+    if ($password === '' || strlen($password) > 2048) {
+      rgsx_db_login_page('Le mot de passe est obligatoire et ne doit pas dépasser 2048 caractères.');
+    }
+    $_SESSION['rgsx_manager_mysql_connection'] = $connection;
+    $_SESSION['rgsx_manager_mysql_password'] = $password;
+    try {
+      rgsx_mysql_pdo()->query('SELECT 1');
+    } catch (Throwable $exception) {
+      $config = rgsx_mysql_config();
+      rgsx_debug_log('manager_login_failed', [
+        'type' => get_class($exception),
+        'code' => (string)$exception->getCode(),
+        'message' => $exception->getMessage(),
+        'host' => $config['host'],
+        'database' => $config['database'],
+        'user' => $config['user'],
+      ]);
+      unset($_SESSION['rgsx_manager_mysql_password']);
+      $GLOBALS['rgsx_catalog_db_pdo'] = null;
+      rgsx_db_login_page('Connexion refusée. Vérifie le serveur, la base, le compte et le mot de passe MariaDB.');
+    }
+
+    session_regenerate_id(true);
+    $rememberStored = false;
+    if (($_POST['remember_connection'] ?? '') === '1') {
       try {
-        rgsx_mysql_pdo()->query('SELECT 1');
-        session_regenerate_id(true);
-        rgsx_db_redirect('database');
-      } catch (Throwable $exception) {
-        $config = rgsx_mysql_config();
-        rgsx_debug_log('manager_login_failed', [
-          'type' => get_class($exception),
-          'code' => (string)$exception->getCode(),
-          'message' => $exception->getMessage(),
-          'host' => $config['host'],
-          'database' => $config['database'],
-          'user' => $config['user'],
-        ]);
-        unset($_SESSION['rgsx_manager_mysql_password']);
-        $GLOBALS['rgsx_catalog_db_pdo'] = null;
-        rgsx_db_login_page('Connexion refusée. Vérifie le serveur, le compte et le mot de passe MariaDB.');
+        rgsx_db_save_remembered_connection($connection + ['password' => $password]);
+        $rememberStored = true;
+      } catch (RuntimeException $exception) {
+        rgsx_db_flash('', 'Connexion réussie, mais impossible de mémoriser les identifiants : ' . $exception->getMessage());
+      }
+    } else {
+      try {
+        rgsx_db_clear_remembered_connection();
+      } catch (RuntimeException $exception) {
+        rgsx_db_flash('', 'Connexion réussie, mais impossible d’effacer les identifiants mémorisés : ' . $exception->getMessage());
       }
     }
-    rgsx_db_login_page('Le mot de passe est obligatoire.');
+    try {
+      rgsx_db_set_session_cookie_lifetime($rememberStored ? 60 * 60 * 24 * 30 : 0);
+    } catch (RuntimeException $exception) {
+      rgsx_db_flash('', $exception->getMessage());
+    }
+    rgsx_db_redirect('database');
   }
   rgsx_db_login_page();
 }
@@ -464,10 +802,12 @@ $mysqlMode = true;
 $dbPath = rgsx_mysql_display_uri();
 $dbError = '';
 $platformsAll = [];
+$sourceRows = [];
 try {
   rgsx_catalog_db();
   $dbReady = true;
   $platformsAll = rgsx_catalog_db_platform_summary('', 1000, 0);
+  $sourceRows = rgsx_catalog_db_source_summary();
 } catch (Throwable $exception) {
   $dbError = $exception->getMessage();
 }
@@ -557,7 +897,7 @@ $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
         <strong><?php echo rgsx_db_h(basename($dbPath)); ?></strong>
         <span class="text-secondary small"><?php echo rgsx_db_h($dbPath); ?></span>
       </div>
-      <?php if ($mysqlMode): ?><form method="post" class="m-0"><input type="hidden" name="action" value="manager_logout"><button class="btn btn-sm btn-outline-secondary">Se déconnecter</button></form><?php endif; ?>
+      <?php if ($mysqlMode): ?><form method="post" class="m-0"><input type="hidden" name="action" value="manager_logout"><button class="btn btn-sm btn-outline-secondary">Se déconnecter / changer de base</button></form><?php endif; ?>
       <?php if ($dbReady): ?>
         <div class="d-flex flex-wrap gap-2 small">
           <span class="stat px-3 py-2">Plateformes <strong><?php echo count($platformsAll); ?></strong></span>
@@ -607,20 +947,54 @@ $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
           <div class="col-lg-2"><button class="btn btn-primary w-100">Ajouter</button></div>
         </form>
       </div>
+      <?php if ($sourceRows): ?>
+        <div class="panel p-3 mb-4" style="box-shadow:none;background:#f8fbfa">
+          <h3 class="h6">Visibilité des sources</h3>
+          <p class="small text-secondary">Masquer une source retire temporairement toutes ses plateformes et leurs jeux du catalogue synchronisé par les clients RGSX. Les données restent dans MariaDB.</p>
+          <div class="d-flex flex-wrap gap-2">
+            <?php foreach ($sourceRows as $sourceRow): ?>
+              <form method="post" class="border rounded bg-white p-2 d-flex flex-wrap align-items-center gap-2">
+                <input type="hidden" name="action" value="catalog_visibility"><input type="hidden" name="tab" value="platforms">
+                <input type="hidden" name="entity_type" value="source"><input type="hidden" name="entity_key" value="<?php echo rgsx_db_h($sourceRow['source']); ?>">
+                <span><strong><?php echo rgsx_db_h($sourceRow['source']); ?></strong> <span class="small text-secondary">(<?php echo (int)$sourceRow['platform_count']; ?> plateformes)</span></span>
+                <?php if ((bool)$sourceRow['is_visible']): ?>
+                  <input type="hidden" name="visible" value="0"><button class="btn btn-sm btn-outline-warning">Masquer la source</button>
+                <?php else: ?>
+                  <input type="hidden" name="visible" value="1"><button class="btn btn-sm btn-outline-success">Réactiver la source</button>
+                <?php endif; ?>
+              </form>
+            <?php endforeach; ?>
+          </div>
+        </div>
+      <?php endif; ?>
       <div class="table-responsive">
         <table class="table table-hover align-middle">
-          <thead><tr><th>Plateforme</th><th>Source</th><th>Dossier</th><th>Image</th><th class="text-end">Jeux</th><th class="text-end">Actions</th></tr></thead>
+          <thead><tr><th>Plateforme</th><th>Source</th><th>Visibilité</th><th>Dossier</th><th>Image</th><th class="text-end">Jeux</th><th class="text-end">Actions</th></tr></thead>
           <tbody>
           <?php foreach ($platformRows as $row): ?>
             <tr>
               <td><strong><?php echo rgsx_db_h(rgsx_platform_display_name($row['platform_name'], $row['source'] ?? '')); ?></strong><div class="small text-secondary">ID <?php echo (int)$row['id']; ?></div></td>
               <td><?php echo rgsx_db_h($row['source'] ?? ''); ?></td>
+              <td>
+                <?php if (!(bool)$row['source_visible']): ?><span class="badge text-bg-secondary">Masquée par la source</span>
+                <?php elseif (!(bool)$row['platform_visible']): ?><span class="badge text-bg-warning">Plateforme masquée</span>
+                <?php else: ?><span class="badge text-bg-success">Visible</span><?php endif; ?>
+                <form method="post" class="mt-1">
+                  <input type="hidden" name="action" value="catalog_visibility"><input type="hidden" name="tab" value="platforms">
+                  <input type="hidden" name="entity_type" value="platform"><input type="hidden" name="entity_key" value="<?php echo (int)$row['id']; ?>">
+                  <?php if ((bool)$row['platform_visible']): ?>
+                    <input type="hidden" name="visible" value="0"><button class="btn btn-sm btn-outline-warning">Masquer cette plateforme</button>
+                  <?php else: ?>
+                    <input type="hidden" name="visible" value="1"><button class="btn btn-sm btn-outline-success">Réactiver cette plateforme</button>
+                  <?php endif; ?>
+                </form>
+              </td>
               <td><?php echo rgsx_db_h($row['folder']); ?></td>
               <td><?php if ((string)$row['platform_image'] !== ''): ?><a href="?preview_db_image=<?php echo (int)$row['id']; ?>" target="_blank"><?php echo rgsx_db_h($row['platform_image']); ?></a><?php else: ?>-<?php endif; ?></td>
               <td class="text-end"><a href="?tab=games&platform_id=<?php echo (int)$row['id']; ?>" class="badge text-bg-light text-decoration-none"><?php echo (int)$row['game_count']; ?></a></td>
               <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="?tab=games&platform_id=<?php echo (int)$row['id']; ?>">Jeux</a> <button class="btn btn-sm btn-outline-secondary" type="button" onclick="document.getElementById('edit-<?php echo (int)$row['id']; ?>').classList.toggle('d-none')">Modifier</button> <form method="post" class="d-inline" onsubmit="return confirm('Supprimer cette plateforme et ses jeux ?')"><input type="hidden" name="action" value="platform_delete"><input type="hidden" name="tab" value="platforms"><input type="hidden" name="platform_id" value="<?php echo (int)$row['id']; ?>"><button class="btn btn-sm btn-outline-danger">Supprimer</button></form></td>
             </tr>
-            <tr id="edit-<?php echo (int)$row['id']; ?>" class="d-none"><td colspan="6">
+            <tr id="edit-<?php echo (int)$row['id']; ?>" class="d-none"><td colspan="7">
               <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end bg-light p-3 rounded">
                 <input type="hidden" name="action" value="platform_save"><input type="hidden" name="tab" value="platforms"><input type="hidden" name="platform_id" value="<?php echo (int)$row['id']; ?>"><input type="hidden" name="platform_image" value="<?php echo rgsx_db_h($row['platform_image']); ?>">
                 <div class="col-lg-3"><label class="form-label small">Nom</label><input class="form-control" name="platform_name" value="<?php echo rgsx_db_h(rgsx_platform_display_name($row['platform_name'], $row['source'] ?? '')); ?>" required></div>
