@@ -1,8 +1,14 @@
 *.log
 scripts/*
+!scripts/sync_wsquashfs_export.php
+!scripts/sync_torrent_feed.php
+!scripts/sync_all.php
 *.db
 *.db-wal
 *.db-shm
 *.enc
 .git/*
 .github/*
+!scripts/logs/
+scripts/logs/*
+!scripts/logs/.htaccess

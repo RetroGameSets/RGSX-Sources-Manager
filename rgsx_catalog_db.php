@@ -61,12 +61,16 @@ function rgsx_mysql_config(): array {
     }
     return trim(rgsx_manager_setting($name, $legacyName, $default));
   };
+  $password = (string)($_SESSION['rgsx_manager_mysql_password'] ?? '');
+  if (PHP_SAPI === 'cli') {
+    $password = rgsx_manager_setting('RGSX_MYSQL_PASSWORD', 'DB_PASSWORD');
+  }
   return [
     'host' => $setting('host', 'RGSX_MYSQL_HOST', 'DB_HOST'),
     'port' => max(1, min(65535, (int)$setting('port', 'RGSX_MYSQL_PORT', 'DB_PORT', '3306'))),
     'database' => $setting('database', 'RGSX_MYSQL_DATABASE', 'DB_NAME'),
     'user' => $setting('user', 'RGSX_MYSQL_USER', 'DB_USER'),
-    'password' => (string)($_SESSION['rgsx_manager_mysql_password'] ?? ''),
+    'password' => $password,
     'ssl_ca' => trim(rgsx_manager_setting('RGSX_MYSQL_SSL_CA', 'DB_SSL_CA')),
   ];
 }
@@ -188,14 +192,45 @@ function rgsx_catalog_db_now(): string {
   return gmdate('Y-m-d\\TH:i:s\\Z');
 }
 
+function rgsx_catalog_db_import_updated_at(mixed $value, string $fallback): string {
+  $raw = trim((string)$value);
+  if ($raw === '') {
+    return $fallback;
+  }
+  $date = DateTimeImmutable::createFromFormat('!Y-m-d\\TH:i:s\\Z', $raw, new DateTimeZone('UTC'));
+  $errors = DateTimeImmutable::getLastErrors();
+  if (!$date || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))
+    || $date->format('Y-m-d\\TH:i:s\\Z') !== $raw) {
+    throw new InvalidArgumentException('Date de mise à jour RGSX invalide : ' . $raw);
+  }
+  return $raw;
+}
+
 function rgsx_catalog_db_platforms(): array {
   $rows = rgsx_catalog_db()->query('SELECT id, platform_name, source, file_name, folder, platform_image, sort_order, created_at, updated_at FROM platforms ORDER BY sort_order, id')->fetchAll();
   return is_array($rows) ? $rows : [];
 }
 
-function rgsx_catalog_db_platform_summary(string $search = '', int $limit = 200, int $offset = 0): array {
+function rgsx_catalog_db_platform_summary(
+  string $search = '',
+  int $limit = 200,
+  int $offset = 0,
+  string $sort = 'sort_order',
+  string $direction = 'asc'
+): array {
   $limit = max(1, min($limit, 1000));
   $offset = max(0, $offset);
+  $sortColumns = [
+    'sort_order' => 'p.sort_order',
+    'name' => 'LOWER(p.platform_name)',
+    'source' => 'LOWER(p.source)',
+    'visibility' => 'CASE WHEN COALESCE(MAX(pv.is_visible), 1) = 0 OR COALESCE(MAX(sv.is_visible), 1) = 0 THEN 1 ELSE 0 END',
+    'folder' => 'LOWER(p.folder)',
+    'image' => 'LOWER(p.platform_image)',
+    'game_count' => 'COUNT(g.id)',
+  ];
+  $sortExpression = $sortColumns[$sort] ?? $sortColumns['sort_order'];
+  $direction = strtolower($direction) === 'desc' ? 'DESC' : 'ASC';
   $sql = "SELECT p.id, p.platform_name, p.source, p.file_name, p.folder, p.platform_image, p.sort_order, p.updated_at,
                  COALESCE(MAX(pv.is_visible), 1) AS platform_visible,
                  COALESCE(MAX(sv.is_visible), 1) AS source_visible,
@@ -212,7 +247,7 @@ function rgsx_catalog_db_platform_summary(string $search = '', int $limit = 200,
     $params[] = $like;
     $params[] = $like;
   }
-  $sql .= ' GROUP BY p.id ORDER BY p.sort_order, p.id LIMIT ? OFFSET ?';
+  $sql .= ' GROUP BY p.id ORDER BY ' . $sortExpression . ' ' . $direction . ', p.sort_order ASC, p.id ASC LIMIT ? OFFSET ?';
   $stmt = rgsx_catalog_db()->prepare($sql);
   foreach ($params as $index => $value) {
     $stmt->bindValue($index + 1, $value, PDO::PARAM_STR);
@@ -294,6 +329,39 @@ function rgsx_catalog_db_platform_by_id(int $platformId): ?array {
   $stmt->execute([$platformId]);
   $row = $stmt->fetch();
   return is_array($row) ? $row : null;
+}
+
+function rgsx_catalog_db_platform_image_options(): array {
+  $stmt = rgsx_catalog_db()->query(
+    "SELECT p.id, p.platform_name, p.source, p.platform_image, a.file_name AS asset_file_name
+     FROM platforms p
+     JOIN platform_assets a ON a.platform_id = p.id AND a.asset_type = 'platform_image'
+     WHERE OCTET_LENGTH(a.data) > 0
+     ORDER BY p.platform_name, p.source, p.id"
+  );
+  return $stmt->fetchAll() ?: [];
+}
+
+function rgsx_catalog_db_platform_image_by_id(int $platformId): ?array {
+  $stmt = rgsx_catalog_db()->prepare(
+    "SELECT file_name, mime_type, data FROM platform_assets
+     WHERE platform_id = ? AND asset_type = 'platform_image'"
+  );
+  $stmt->execute([$platformId]);
+  $row = $stmt->fetch();
+  if (!is_array($row)) {
+    return null;
+  }
+  if (is_resource($row['data'] ?? null)) {
+    $data = stream_get_contents($row['data']);
+  } else {
+    $data = $row['data'] ?? null;
+  }
+  if (!is_string($data) || $data === '') {
+    return null;
+  }
+  $row['data'] = $data;
+  return $row;
 }
 
 function rgsx_catalog_db_games_count_by_platform(int $platformId, string $search = ''): int {
@@ -407,11 +475,13 @@ function rgsx_mysql_merge_games_bulk(PDO $pdo, int $platformId, array $rows, str
     }
     $url = trim((string)($row[1] ?? ''));
     $size = trim((string)($row[2] ?? ''));
+    $updatedAt = rgsx_catalog_db_import_updated_at($row[3] ?? '', $now);
     $nameKey = strtolower($name);
     $incoming[] = [
       'name' => $name,
       'url' => $url,
       'size' => $size,
+      'updated_at' => $updatedAt,
       'size_bytes' => rgsx_catalog_db_size_bytes($size),
       'display_name' => pathinfo($name, PATHINFO_FILENAME),
       'name_key' => $nameKey,
@@ -494,7 +564,7 @@ function rgsx_mysql_merge_games_bulk(PDO $pdo, int $platformId, array $rows, str
       $updateRows = array_values($updates);
       $caseExpressions = [];
       $updateParameters = [];
-      foreach (['name', 'url', 'size', 'size_bytes', 'display_name'] as $column) {
+      foreach (['name', 'url', 'size', 'size_bytes', 'display_name', 'updated_at'] as $column) {
         $caseParts = ['CASE id'];
         foreach ($updateRows as $updateRow) {
           $caseParts[] = 'WHEN ? THEN ?';
@@ -507,8 +577,7 @@ function rgsx_mysql_merge_games_bulk(PDO $pdo, int $platformId, array $rows, str
       foreach ($updateRows as $updateRow) {
         $updateParameters[] = $updateRow['id'];
       }
-      $updateParameters[] = $now;
-      $updateSql = 'UPDATE games SET name = ' . $caseExpressions['name'] . ', url = ' . $caseExpressions['url'] . ', size = ' . $caseExpressions['size'] . ', size_bytes = ' . $caseExpressions['size_bytes'] . ', display_name = ' . $caseExpressions['display_name'] . ', updated_at = ? WHERE id IN (' . $idPlaceholders . ')';
+      $updateSql = 'UPDATE games SET name = ' . $caseExpressions['name'] . ', url = ' . $caseExpressions['url'] . ', size = ' . $caseExpressions['size'] . ', size_bytes = ' . $caseExpressions['size_bytes'] . ', display_name = ' . $caseExpressions['display_name'] . ', updated_at = ' . $caseExpressions['updated_at'] . ' WHERE id IN (' . $idPlaceholders . ')';
       $pdo->prepare($updateSql)->execute($updateParameters);
     }
 
@@ -521,7 +590,7 @@ function rgsx_mysql_merge_games_bulk(PDO $pdo, int $platformId, array $rows, str
         $insertParameters = [];
         foreach ($insertChunk as $game) {
           $valueParts[] = '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
-          array_push($insertParameters, $platformId, $game['name'], $game['url'], $game['size'], $game['size_bytes'], $game['display_name'], $sortOrder++, '{}', $now, $now);
+          array_push($insertParameters, $platformId, $game['name'], $game['url'], $game['size'], $game['size_bytes'], $game['display_name'], $sortOrder++, '{}', $now, $game['updated_at']);
         }
         $insertSql = 'INSERT INTO games(platform_id, name, url, size, size_bytes, display_name, sort_order, metadata_json, created_at, updated_at) VALUES ' . implode(',', $valueParts) . ' ON DUPLICATE KEY UPDATE size = VALUES(size), size_bytes = VALUES(size_bytes), updated_at = VALUES(updated_at)';
         $pdo->prepare($insertSql)->execute($insertParameters);
@@ -554,6 +623,7 @@ function rgsx_catalog_db_merge_games(int $platformId, array $rows, string $mode 
       }
       $url = trim((string)($row[1] ?? ''));
       $size = trim((string)($row[2] ?? ''));
+      $updatedAt = rgsx_catalog_db_import_updated_at($row[3] ?? '', $now);
       $findExact = $pdo->prepare('SELECT id FROM games WHERE platform_id = ? AND name = ? AND url = ? LIMIT 1');
       $findExact->execute([$platformId, $name, $url]);
       $exactId = $findExact->fetchColumn();
@@ -562,7 +632,7 @@ function rgsx_catalog_db_merge_games(int $platformId, array $rows, string $mode 
           continue;
         }
         $update = $pdo->prepare('UPDATE games SET name = ?, url = ?, size = ?, size_bytes = ?, display_name = ?, updated_at = ? WHERE id = ?');
-        $update->execute([$name, $url, $size, rgsx_catalog_db_size_bytes($size), pathinfo($name, PATHINFO_FILENAME), $now, (int)$exactId]);
+        $update->execute([$name, $url, $size, rgsx_catalog_db_size_bytes($size), pathinfo($name, PATHINFO_FILENAME), $updatedAt, (int)$exactId]);
         $changed++;
         continue;
       }
@@ -572,13 +642,13 @@ function rgsx_catalog_db_merge_games(int $platformId, array $rows, string $mode 
         $existing = $findName->fetchColumn();
         if ($existing !== false && $existing !== null) {
           $update = $pdo->prepare('UPDATE games SET name = ?, url = ?, size = ?, size_bytes = ?, display_name = ?, updated_at = ? WHERE id = ?');
-          $update->execute([$name, $url, $size, rgsx_catalog_db_size_bytes($size), pathinfo($name, PATHINFO_FILENAME), $now, (int)$existing]);
+          $update->execute([$name, $url, $size, rgsx_catalog_db_size_bytes($size), pathinfo($name, PATHINFO_FILENAME), $updatedAt, (int)$existing]);
           $changed++;
           continue;
         }
       }
       $insert = $pdo->prepare('INSERT INTO games(platform_id, name, url, size, size_bytes, display_name, sort_order, metadata_json, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, COALESCE((SELECT MAX(sort_order) + 1 FROM games WHERE platform_id = ?), 0), \'{}\', ?, ?) ON DUPLICATE KEY UPDATE size=VALUES(size), size_bytes=VALUES(size_bytes), updated_at=VALUES(updated_at)');
-      $insert->execute([$platformId, $name, $url, $size, rgsx_catalog_db_size_bytes($size), pathinfo($name, PATHINFO_FILENAME), $platformId, $now, $now]);
+      $insert->execute([$platformId, $name, $url, $size, rgsx_catalog_db_size_bytes($size), pathinfo($name, PATHINFO_FILENAME), $platformId, $now, $updatedAt]);
       $changed++;
     }
     $pdo->commit();
@@ -618,6 +688,32 @@ function rgsx_catalog_db_size_bytes(string $size): ?int {
   $unit = strtoupper($matches[2] ?? '');
   $units = ['' => 1, 'K' => 1024, 'M' => 1024 * 1024, 'G' => 1024 * 1024 * 1024, 'T' => 1024 * 1024 * 1024 * 1024, 'P' => 1024 * 1024 * 1024 * 1024 * 1024, 'E' => 1024 * 1024 * 1024 * 1024 * 1024 * 1024];
   return (int)($number * ($units[$unit] ?? 1));
+}
+
+function rgsx_catalog_db_format_size(mixed $value): string {
+  $size = trim((string)$value);
+  if ($size === '' || !preg_match('/^(\d+(?:[.,]\d+)?)\s*(B|BYTES?|[KMGTPE](?:I?B)?)?$/i', $size, $matches)) {
+    return $size;
+  }
+
+  $amount = (float)str_replace(',', '.', $matches[1]);
+  $unit = strtoupper($matches[2] ?? '');
+  $prefix = $unit === '' || in_array($unit, ['B', 'BYTE', 'BYTES'], true) ? '' : $unit[0];
+  $unitPrefixes = ['' => 0, 'K' => 1, 'M' => 2, 'G' => 3, 'T' => 4, 'P' => 5, 'E' => 6];
+  $bytes = $amount * (1024 ** ($unitPrefixes[$prefix] ?? 0));
+  $displayUnits = ['B', 'KB', 'MB', 'GB'];
+  $displayUnitIndex = 0;
+
+  while ($bytes >= 1024 && $displayUnitIndex < count($displayUnits) - 1) {
+    $bytes /= 1024;
+    $displayUnitIndex++;
+  }
+
+  $formattedAmount = number_format($bytes, 2, '.', '');
+  if (str_contains($formattedAmount, '.')) {
+    $formattedAmount = rtrim(rtrim($formattedAmount, '0'), '.');
+  }
+  return $formattedAmount . ' ' . $displayUnits[$displayUnitIndex];
 }
 
 function rgsx_catalog_db_find_platform_id(string $fileName): ?int {
@@ -740,7 +836,8 @@ function rgsx_catalog_db_replace_games(string $fileName, array $rows): int {
       }
       $url = trim((string)($row[1] ?? ''));
       $size = trim((string)($row[2] ?? ''));
-      $insert->execute([$platformId, $name, $url, $size, rgsx_catalog_db_size_bytes($size), pathinfo($name, PATHINFO_FILENAME), (int)$index, '{}', $now, $now]);
+      $updatedAt = rgsx_catalog_db_import_updated_at($row[3] ?? '', $now);
+      $insert->execute([$platformId, $name, $url, $size, rgsx_catalog_db_size_bytes($size), pathinfo($name, PATHINFO_FILENAME), (int)$index, '{}', $now, $updatedAt]);
       $count++;
     }
     $pdo->prepare('UPDATE platforms SET updated_at = ? WHERE id = ?')->execute([$now, $platformId]);
@@ -748,6 +845,197 @@ function rgsx_catalog_db_replace_games(string $fileName, array $rows): int {
     return $count;
   } catch (Throwable $exception) {
     $pdo->rollBack();
+    throw $exception;
+  }
+}
+
+/**
+ * Synchronize one platform against a complete source snapshot.
+ *
+ * @return array{
+ *   added:int,
+ *   updated:int,
+ *   deleted:int,
+ *   unchanged:int,
+ *   added_games:list<array{id:int,name:string,url:string,size:string,updated_at:string}>,
+ *   updated_games:list<array{id:int,name:string,changes:array<string,array{before:mixed,after:mixed}>}>,
+ *   deleted_games:list<array{id:int,name:string,url:string,size:string,updated_at:string}>
+ * }
+ */
+function rgsx_catalog_db_sync_platform_games(int $platformId, array $rows): array {
+  if ($platformId <= 0) {
+    throw new InvalidArgumentException('A valid target platform is required.');
+  }
+
+  $now = rgsx_catalog_db_now();
+  $incomingByName = [];
+  foreach ($rows as $row) {
+    if (!is_array($row)) {
+      throw new InvalidArgumentException('Invalid game row in synchronization snapshot.');
+    }
+    $name = trim((string)($row[0] ?? ''));
+    if ($name === '') {
+      throw new InvalidArgumentException('Game name cannot be empty in synchronization snapshot.');
+    }
+    $url = trim((string)($row[1] ?? ''));
+    $size = trim((string)($row[2] ?? ''));
+    $updatedAt = trim((string)($row[3] ?? ''));
+    $incomingByName[strtolower($name)] = [
+      'name' => $name,
+      'url' => $url,
+      'size' => $size,
+      'updated_at' => $updatedAt,
+    ];
+  }
+
+  $pdo = rgsx_catalog_db();
+  $pdo->beginTransaction();
+  try {
+    $existingStatement = $pdo->prepare(
+      'SELECT id, name, url, size, size_bytes, display_name, sort_order, updated_at
+       FROM games WHERE platform_id = ? ORDER BY id'
+    );
+    $existingStatement->execute([$platformId]);
+    $existingByName = [];
+    foreach ($existingStatement->fetchAll() as $existing) {
+      $nameKey = strtolower(trim((string)$existing['name']));
+      $existingByName[$nameKey][] = $existing;
+    }
+
+    $insert = $pdo->prepare(
+      'INSERT INTO games(
+         platform_id, name, url, size, size_bytes, display_name, sort_order,
+         metadata_json, created_at, updated_at
+       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    $update = $pdo->prepare(
+      'UPDATE games
+       SET name = ?, url = ?, size = ?, size_bytes = ?, display_name = ?, sort_order = ?, updated_at = ?
+       WHERE id = ?'
+    );
+    $usedIds = [];
+    $added = 0;
+    $updated = 0;
+    $unchanged = 0;
+    $addedGames = [];
+    $updatedGames = [];
+    $deletedGames = [];
+    $sortOrder = 0;
+
+    foreach ($incomingByName as $nameKey => $game) {
+      $matches = $existingByName[$nameKey] ?? [];
+      $existing = $matches[0] ?? null;
+      $displayName = pathinfo($game['name'], PATHINFO_FILENAME);
+      $sizeBytes = rgsx_catalog_db_size_bytes($game['size']);
+      $updatedAt = $game['updated_at'] !== ''
+        ? rgsx_catalog_db_import_updated_at($game['updated_at'], $now)
+        : (is_array($existing) ? (string)$existing['updated_at'] : $now);
+
+      if (is_array($existing)) {
+        $gameValues = [
+          $game['name'],
+          $game['url'],
+          $game['size'],
+          $sizeBytes,
+          $displayName,
+          $sortOrder,
+          $updatedAt,
+        ];
+        $existingValues = [
+          (string)$existing['name'],
+          (string)$existing['url'],
+          (string)$existing['size'],
+          $existing['size_bytes'] === null ? null : (int)$existing['size_bytes'],
+          (string)$existing['display_name'],
+          (int)$existing['sort_order'],
+          (string)$existing['updated_at'],
+        ];
+        $usedIds[(int)$existing['id']] = true;
+
+        if ($gameValues !== $existingValues) {
+          $changeFields = ['name', 'url', 'size', 'size_bytes', 'display_name', 'sort_order', 'updated_at'];
+          $changes = [];
+          foreach ($changeFields as $index => $field) {
+            if ($existingValues[$index] !== $gameValues[$index]) {
+              $changes[$field] = [
+                'before' => $existingValues[$index],
+                'after' => $gameValues[$index],
+              ];
+            }
+          }
+          $update->execute([...$gameValues, (int)$existing['id']]);
+          $updated++;
+          $updatedGames[] = [
+            'id' => (int)$existing['id'],
+            'name' => $game['name'],
+            'changes' => $changes,
+          ];
+        } else {
+          $unchanged++;
+        }
+      } else {
+        $insert->execute([
+          $platformId,
+          $game['name'],
+          $game['url'],
+          $game['size'],
+          $sizeBytes,
+          $displayName,
+          $sortOrder,
+          '{}',
+          $now,
+          $updatedAt,
+        ]);
+        $added++;
+        $addedGames[] = [
+          'id' => (int)$pdo->lastInsertId(),
+          'name' => $game['name'],
+          'url' => $game['url'],
+          'size' => $game['size'],
+          'updated_at' => $updatedAt,
+        ];
+      }
+      $sortOrder++;
+    }
+
+    $staleIds = [];
+    foreach ($existingByName as $matches) {
+      foreach ($matches as $existing) {
+        $id = (int)$existing['id'];
+        if (!isset($usedIds[$id])) {
+          $staleIds[] = $id;
+          $deletedGames[] = [
+            'id' => $id,
+            'name' => (string)$existing['name'],
+            'url' => (string)$existing['url'],
+            'size' => (string)$existing['size'],
+            'updated_at' => (string)$existing['updated_at'],
+          ];
+        }
+      }
+    }
+    foreach (array_chunk($staleIds, 500) as $idChunk) {
+      $placeholders = implode(',', array_fill(0, count($idChunk), '?'));
+      $delete = $pdo->prepare(
+        'DELETE FROM games WHERE platform_id = ? AND id IN (' . $placeholders . ')'
+      );
+      $delete->execute(array_merge([$platformId], $idChunk));
+    }
+
+    $pdo->commit();
+    return [
+      'added' => $added,
+      'updated' => $updated,
+      'deleted' => count($staleIds),
+      'unchanged' => $unchanged,
+      'added_games' => $addedGames,
+      'updated_games' => $updatedGames,
+      'deleted_games' => $deletedGames,
+    ];
+  } catch (Throwable $exception) {
+    if ($pdo->inTransaction()) {
+      $pdo->rollBack();
+    }
     throw $exception;
   }
 }

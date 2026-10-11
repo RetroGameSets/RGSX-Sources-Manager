@@ -32,6 +32,8 @@ Le poste doit pouvoir joindre MariaDB; pour un accès distant, l’hébergeur do
 Notes:
 - Si un pare-feu demande une autorisation pour PHP, acceptez l’accès local.
 - Le serveur intégré s’arrête lorsque vous fermez la fenêtre qui s’est ouverte ("PHP Server").
+- Dans l’onglet **Jeux**, les tailles sont affichées avec les unités normalisées **B**, **KB**, **MB** ou **GB**.
+- Dans **Plateformes** et **Jeux**, cliquez sur un en-tête de colonne pour trier les résultats (un second clic inverse l’ordre). Les aperçus de résultats du **Scraper** sont également triables.
 
 ---
 

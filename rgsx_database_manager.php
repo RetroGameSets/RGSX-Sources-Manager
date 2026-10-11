@@ -9,6 +9,14 @@ function rgsx_db_h(mixed $value): string {
   return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+function rgsx_db_sort_header(string $label, string $sort, string $activeSort, string $direction, callable $urlBuilder): string {
+  $ariaSort = $sort === $activeSort ? ($direction === 'asc' ? 'ascending' : 'descending') : 'none';
+  $indicator = $sort !== $activeSort ? '&varr;' : ($direction === 'asc' ? '&uarr;' : '&darr;');
+  return '<th scope="col" aria-sort="' . $ariaSort . '"><a class="table-sort" href="'
+    . rgsx_db_h($urlBuilder($sort)) . '">' . rgsx_db_h($label)
+    . ' <span aria-hidden="true">' . $indicator . '</span></a></th>';
+}
+
 function rgsx_db_storage_platform_name(string $name, string $source): string {
   $name = trim($name);
   $source = trim($source);
@@ -505,13 +513,18 @@ function rgsx_db_process_action(string $action): void {
       $platformId = (int)($_POST['platform_id'] ?? 0);
       $current = $platformId > 0 ? rgsx_catalog_db_platform_by_id($platformId) : null;
       $imageName = trim((string)($_POST['platform_image'] ?? ($current['platform_image'] ?? '')));
-      $selectedImage = trim((string)($_POST['platform_image_existing'] ?? ''));
-      if ($selectedImage !== '') {
-        $imageName = basename($selectedImage);
+      $selectedImagePlatformId = (int)($_POST['platform_image_existing'] ?? 0);
+      $selectedImage = $selectedImagePlatformId > 0
+        ? rgsx_catalog_db_platform_image_by_id($selectedImagePlatformId)
+        : null;
+      if ($selectedImagePlatformId > 0 && $selectedImage === null) {
+        throw new InvalidArgumentException('L’image sélectionnée n’existe plus dans le catalogue.');
       }
       $image = rgsx_db_store_image_upload('platform_image_file');
       if (is_array($image)) {
         $imageName = $image['name'];
+      } elseif (is_array($selectedImage)) {
+        $imageName = basename((string)$selectedImage['file_name']);
       }
       $requestedDisplayName = trim((string)($_POST['platform_name'] ?? ''));
       $requestedSource = trim((string)($_POST['source'] ?? ($current['source'] ?? '')));
@@ -529,6 +542,13 @@ function rgsx_db_process_action(string $action): void {
       ], $platformId > 0 ? $platformId : null);
       if (is_array($image)) {
         rgsx_catalog_db_upsert_platform_image($savedId, $image['name'], $image['data'], $image['mime']);
+      } elseif (is_array($selectedImage)) {
+        rgsx_catalog_db_upsert_platform_image(
+          $savedId,
+          basename((string)$selectedImage['file_name']),
+          $selectedImage['data'],
+          (string)($selectedImage['mime_type'] ?? '')
+        );
       }
       rgsx_db_flash($platformId > 0 ? 'Plateforme mise à jour.' : 'Plateforme créée.');
       rgsx_db_redirect('platforms');
@@ -802,23 +822,56 @@ $mysqlMode = true;
 $dbPath = rgsx_mysql_display_uri();
 $dbError = '';
 $platformsAll = [];
+$platformTemplateOptions = [];
 $sourceRows = [];
+$platformImageOptions = [];
+$platformImageOptionIds = [];
 try {
   rgsx_catalog_db();
   $dbReady = true;
   $platformsAll = rgsx_catalog_db_platform_summary('', 1000, 0);
+  $platformTemplateOptions = rgsx_catalog_db_platforms();
   $sourceRows = rgsx_catalog_db_source_summary();
+  $platformImageOptions = rgsx_catalog_db_platform_image_options();
+  $platformImageOptionIds = array_fill_keys(array_map(
+    static fn(array $option): int => (int)$option['id'],
+    $platformImageOptions
+  ), true);
 } catch (Throwable $exception) {
   $dbError = $exception->getMessage();
 }
 
 $platformSearch = trim((string)($_GET['platform_search'] ?? ''));
 $platformPage = max(1, (int)($_GET['platform_page'] ?? 1));
+$platformSortOptions = ['name' => 'Plateforme', 'source' => 'Source', 'visibility' => 'Visibilité', 'folder' => 'Dossier', 'image' => 'Image', 'game_count' => 'Jeux'];
+$platformSort = (string)($_GET['platform_sort'] ?? 'sort_order');
+if (!array_key_exists($platformSort, $platformSortOptions) && $platformSort !== 'sort_order') {
+  $platformSort = 'sort_order';
+}
+$platformDirection = strtolower((string)($_GET['platform_order'] ?? 'asc')) === 'desc' ? 'desc' : 'asc';
 $platformPerPage = 50;
 $platformTotal = $dbReady ? rgsx_catalog_db_platform_count($platformSearch) : 0;
 $platformPages = max(1, (int)ceil($platformTotal / $platformPerPage));
 $platformPage = min($platformPage, $platformPages);
-$platformRows = $dbReady ? rgsx_catalog_db_platform_summary($platformSearch, $platformPerPage, ($platformPage - 1) * $platformPerPage) : [];
+$platformRows = $dbReady ? rgsx_catalog_db_platform_summary($platformSearch, $platformPerPage, ($platformPage - 1) * $platformPerPage, $platformSort, $platformDirection) : [];
+$platformSortUrl = static function (string $sort) use ($platformSearch, $platformSort, $platformDirection): string {
+  $direction = $sort === $platformSort && $platformDirection === 'asc' ? 'desc' : 'asc';
+  return '?' . http_build_query([
+    'tab' => 'platforms',
+    'platform_search' => $platformSearch,
+    'platform_sort' => $sort,
+    'platform_order' => $direction,
+  ]);
+};
+$platformPageUrl = static function (int $page) use ($platformSearch, $platformSort, $platformDirection): string {
+  return '?' . http_build_query([
+    'tab' => 'platforms',
+    'platform_search' => $platformSearch,
+    'platform_sort' => $platformSort,
+    'platform_order' => $platformDirection,
+    'platform_page' => $page,
+  ]);
+};
 $selectedPlatformId = (int)($_GET['platform_id'] ?? ($platformsAll[0]['id'] ?? 0));
 $selectedPlatform = $dbReady && $selectedPlatformId > 0 ? rgsx_catalog_db_platform_by_id($selectedPlatformId) : null;
 $gameSearch = trim((string)($_GET['game_search'] ?? ''));
@@ -836,6 +889,10 @@ $gameTotal = $selectedPlatform ? rgsx_catalog_db_games_count_by_platform($select
 $gamePages = max(1, (int)ceil($gameTotal / $gamePerPage));
 $gamePage = min($gamePage, $gamePages);
 $gameRows = $selectedPlatform ? rgsx_catalog_db_games_page($selectedPlatformId, $gameSearch, $gamePerPage, ($gamePage - 1) * $gamePerPage, $gameSort, $gameDirection) : [];
+foreach ($gameRows as &$gameRow) {
+  $gameRow['size'] = rgsx_catalog_db_format_size($gameRow['size'] ?? '');
+}
+unset($gameRow);
 $gameSortUrl = static function (string $sort) use ($selectedPlatformId, $gameSearch, $gameSort, $gameDirection): string {
   $direction = $sort === $gameSort && $gameDirection === 'asc' ? 'desc' : 'asc';
   return '?' . http_build_query([
@@ -844,6 +901,16 @@ $gameSortUrl = static function (string $sort) use ($selectedPlatformId, $gameSea
     'game_search' => $gameSearch,
     'game_sort' => $sort,
     'game_order' => $direction,
+  ]);
+};
+$gamePageUrl = static function (int $page) use ($selectedPlatformId, $gameSearch, $gameSort, $gameDirection): string {
+  return '?' . http_build_query([
+    'tab' => 'games',
+    'platform_id' => $selectedPlatformId,
+    'game_search' => $gameSearch,
+    'game_sort' => $gameSort,
+    'game_order' => $gameDirection,
+    'game_page' => $page,
   ]);
 };
 $lastScrape = is_array($_SESSION['rgsx_db_last_scrape'] ?? null) ? $_SESSION['rgsx_db_last_scrape'] : [];
@@ -869,9 +936,35 @@ $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
     .stat { border-left:4px solid #65b89b; background:#f7fbf9; }
     .url-cell { max-width:440px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .table > :not(caption) > * > * { vertical-align:middle; }
+    .table-sort { color:inherit; text-decoration:none; white-space:nowrap; }
+    .table-sort:hover { color:var(--rgsx-blue); text-decoration:underline; }
+    .table-sort-button { padding:0; border:0; background:none; color:inherit; font:inherit; font-weight:600; text-align:left; white-space:nowrap; }
+    .table-sort-button:hover { color:var(--rgsx-blue); text-decoration:underline; }
     .result-card { border:1px solid #d8e5e1; border-radius:12px; background:#fff; }
     .result-rows { max-height:260px; overflow:auto; }
     .sticky-tools { position:sticky; top:12px; z-index:5; }
+    .platforms-heading { align-items:flex-end; }
+    .platforms-search-form { width:min(100%, 390px); }
+    .platforms-search-form input { min-width:0; }
+    .platform-editor { border:1px solid #d7e2df; border-radius:16px; background:#f8fbfa; }
+    .platform-editor-title { display:flex; align-items:flex-start; gap:.75rem; }
+    .platform-editor-title-icon { display:grid; width:2.5rem; height:2.5rem; flex:0 0 2.5rem; place-items:center; border-radius:12px; background:#e2f4ef; color:#176b87; font-size:1.2rem; }
+    .platform-editor-section { padding:1rem; border:1px solid #e0e9e6; border-radius:12px; background:rgba(255,255,255,.78); }
+    .platform-editor-section-title { margin-bottom:.75rem; color:#42606a; font-size:.78rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+    .platform-template-help { display:flex; align-items:flex-start; gap:.45rem; margin-top:.5rem; color:#64777b; font-size:.82rem; }
+    .platform-image-preview { min-height:56px; padding:.5rem .75rem; border:1px dashed #c7d9d3; border-radius:10px; background:#f8fbfa; }
+    .platform-image-preview img { width:48px; height:48px; object-fit:contain; border:1px solid #d7e2df; border-radius:8px; background:#fff; padding:3px; }
+    .source-visibility-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr)); gap:.65rem; }
+    .source-visibility-card { min-width:0; border:1px solid #e0e9e6; border-radius:11px; background:#fff; }
+    .source-visibility-card form { display:flex; min-height:100%; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.65rem; padding:.75rem; }
+    .source-visibility-name { min-width:0; overflow-wrap:anywhere; }
+    @media (max-width: 575.98px) {
+      .platforms-heading { align-items:stretch; }
+      .platforms-search-form { width:100%; }
+      .platforms-search-form .btn { flex:0 0 auto; }
+      .platform-editor { padding:1rem !important; }
+      .source-visibility-card form .btn { width:100%; }
+    }
   </style>
 </head>
 <body>
@@ -931,45 +1024,100 @@ $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
 
   <?php if ($activeTab === 'platforms'): ?>
     <section class="panel p-4">
-      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+      <div class="platforms-heading d-flex flex-wrap justify-content-between gap-3 mb-3">
         <div><h2 class="h4 mb-1">Plateformes</h2><div class="text-secondary small">Métadonnées, images et compteurs lus directement depuis MariaDB.</div></div>
-        <form method="get" class="d-flex gap-2"><input type="hidden" name="tab" value="platforms"><input class="form-control" name="platform_search" value="<?php echo rgsx_db_h($platformSearch); ?>" placeholder="Rechercher..."><button class="btn btn-outline-secondary">Filtrer</button></form>
+        <form method="get" class="platforms-search-form d-flex gap-2"><input type="hidden" name="tab" value="platforms"><input type="hidden" name="platform_sort" value="<?php echo rgsx_db_h($platformSort); ?>"><input type="hidden" name="platform_order" value="<?php echo rgsx_db_h($platformDirection); ?>"><input class="form-control" name="platform_search" value="<?php echo rgsx_db_h($platformSearch); ?>" placeholder="Rechercher..."><button class="btn btn-outline-secondary">Filtrer</button></form>
       </div>
-      <div class="panel p-3 mb-4" style="box-shadow:none;background:#f8fbfa">
-        <h3 class="h6">Ajouter une plateforme</h3>
-        <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end">
+      <div class="platform-editor p-4 mb-4">
+        <div class="platform-editor-title mb-3">
+          <span class="platform-editor-title-icon" aria-hidden="true">＋</span>
+          <div><h3 class="h5 mb-1">Ajouter une plateforme</h3><p class="small text-secondary mb-0">Renseigne le système, sa source et son illustration.</p></div>
+        </div>
+        <form id="add-platform-form" method="post" enctype="multipart/form-data" class="row g-3">
           <input type="hidden" name="action" value="platform_save"><input type="hidden" name="tab" value="platforms">
-          <div class="col-lg-3"><label class="form-label small">Nom</label><input class="form-control" name="platform_name" required></div>
-          <div class="col-lg-2"><label class="form-label small">Source</label><input class="form-control" name="source" placeholder="Archive, Vimms..."></div>
-          <div class="col-lg-2"><label class="form-label small">Dossier</label><input class="form-control" name="folder" required></div>
-          <div class="col-lg-3"><label class="form-label small">Image plateforme</label><input class="form-control" type="file" name="platform_image_file" accept="image/*"></div>
-          <div class="col-lg-2"><label class="form-label small">Nom image existante</label><input class="form-control" name="platform_image"></div>
-          <div class="col-lg-2"><button class="btn btn-primary w-100">Ajouter</button></div>
+          <div class="col-12">
+            <div class="platform-editor-section">
+              <div class="platform-editor-section-title">Démarrage rapide <span class="badge rounded-pill text-bg-light">Facultatif</span></div>
+              <label class="form-label small" for="platform-template">Copier les paramètres d’une plateforme existante</label>
+              <select class="form-select" id="platform-template">
+                <option value="">Aucun modèle — saisir les informations manuellement</option>
+                <?php foreach ($platformTemplateOptions as $platform): ?>
+                  <option value="<?php echo (int)$platform['id']; ?>"
+                    data-folder="<?php echo rgsx_db_h($platform['folder']); ?>"
+                    data-source="<?php echo rgsx_db_h($platform['source'] ?? ''); ?>"
+                    data-image-id="<?php echo isset($platformImageOptionIds[(int)$platform['id']]) ? (int)$platform['id'] : ''; ?>">
+                    <?php echo rgsx_db_h(rgsx_db_platform_label($platform)); ?>
+                  </option>
+                <?php endforeach; ?>
+              </select>
+              <div class="platform-template-help"><span aria-hidden="true">ℹ</span><span>Le dossier, la source et l’image sont repris si disponibles ; le nom reste à saisir.</span></div>
+            </div>
+          </div>
+          <div class="col-12">
+            <div class="platform-editor-section">
+              <div class="platform-editor-section-title">Informations de la plateforme</div>
+              <div class="row g-3">
+                <div class="col-12 col-lg-5"><label class="form-label small" for="new-platform-name">Nom du système</label><input id="new-platform-name" class="form-control" name="platform_name" placeholder="Ex. PlayStation 2" required></div>
+                <div class="col-12 col-md-6 col-lg-3"><label class="form-label small" for="new-platform-source">Source</label><input id="new-platform-source" class="form-control" name="source" list="existing-platform-sources" placeholder="Choisir ou saisir"></div>
+                <div class="col-12 col-md-6 col-lg-4"><label class="form-label small" for="new-platform-folder">Dossier ROM</label><input id="new-platform-folder" class="form-control" name="folder" placeholder="Ex. ps2" required></div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12">
+            <div class="platform-editor-section">
+              <div class="platform-editor-section-title">Image de la plateforme</div>
+              <div class="row g-3 align-items-end">
+                <div class="col-12 col-lg-7">
+                  <label class="form-label small" for="new-platform-image-existing">Réutiliser une image du catalogue</label>
+                  <select id="new-platform-image-existing" class="form-select" name="platform_image_existing">
+                    <option value="">Aucune image existante</option>
+                    <?php foreach ($platformImageOptions as $imageOption): ?>
+                      <option value="<?php echo (int)$imageOption['id']; ?>">
+                        <?php echo rgsx_db_h(rgsx_db_platform_label($imageOption)); ?> — <?php echo rgsx_db_h($imageOption['asset_file_name'] ?: $imageOption['platform_image']); ?>
+                      </option>
+                    <?php endforeach; ?>
+                  </select>
+                </div>
+                <div class="col-12 col-lg-5"><label class="form-label small" for="new-platform-image-file">Importer un nouveau fichier</label><input id="new-platform-image-file" class="form-control" type="file" name="platform_image_file" accept="image/*"></div>
+                <div class="col-12">
+                  <div id="new-platform-image-preview" class="platform-image-preview d-none align-items-center gap-2 small text-secondary">
+                    <img alt="Aperçu de l’image sélectionnée"><span></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 d-flex flex-wrap justify-content-end align-items-center gap-2">
+            <datalist id="existing-platform-sources"><?php foreach ($sourceRows as $sourceRow): ?><option value="<?php echo rgsx_db_h($sourceRow['source']); ?>"><?php echo (int)$sourceRow['platform_count']; ?> plateforme(s)</option><?php endforeach; ?></datalist>
+            <button class="btn btn-primary px-4">Créer la plateforme</button>
+          </div>
         </form>
       </div>
       <?php if ($sourceRows): ?>
-        <div class="panel p-3 mb-4" style="box-shadow:none;background:#f8fbfa">
-          <h3 class="h6">Visibilité des sources</h3>
-          <p class="small text-secondary">Masquer une source retire temporairement toutes ses plateformes et leurs jeux du catalogue synchronisé par les clients RGSX. Les données restent dans MariaDB.</p>
-          <div class="d-flex flex-wrap gap-2">
+        <div class="panel p-3 p-md-4 mb-4" style="box-shadow:none;background:#f8fbfa">
+          <h3 class="h6 mb-1">Visibilité des sources</h3>
+          <p class="small text-secondary mb-3">Masquer une source retire temporairement ses plateformes et leurs jeux du catalogue synchronisé. Les données restent dans MariaDB.</p>
+          <div class="source-visibility-grid">
             <?php foreach ($sourceRows as $sourceRow): ?>
-              <form method="post" class="border rounded bg-white p-2 d-flex flex-wrap align-items-center gap-2">
-                <input type="hidden" name="action" value="catalog_visibility"><input type="hidden" name="tab" value="platforms">
-                <input type="hidden" name="entity_type" value="source"><input type="hidden" name="entity_key" value="<?php echo rgsx_db_h($sourceRow['source']); ?>">
-                <span><strong><?php echo rgsx_db_h($sourceRow['source']); ?></strong> <span class="small text-secondary">(<?php echo (int)$sourceRow['platform_count']; ?> plateformes)</span></span>
-                <?php if ((bool)$sourceRow['is_visible']): ?>
-                  <input type="hidden" name="visible" value="0"><button class="btn btn-sm btn-outline-warning">Masquer la source</button>
-                <?php else: ?>
-                  <input type="hidden" name="visible" value="1"><button class="btn btn-sm btn-outline-success">Réactiver la source</button>
-                <?php endif; ?>
-              </form>
+              <article class="source-visibility-card">
+                <form method="post">
+                  <input type="hidden" name="action" value="catalog_visibility"><input type="hidden" name="tab" value="platforms">
+                  <input type="hidden" name="entity_type" value="source"><input type="hidden" name="entity_key" value="<?php echo rgsx_db_h($sourceRow['source']); ?>">
+                  <span class="source-visibility-name"><strong><?php echo rgsx_db_h($sourceRow['source']); ?></strong><span class="d-block small text-secondary"><?php echo (int)$sourceRow['platform_count']; ?> plateformes</span></span>
+                  <?php if ((bool)$sourceRow['is_visible']): ?>
+                    <input type="hidden" name="visible" value="0"><button class="btn btn-sm btn-outline-warning">Masquer</button>
+                  <?php else: ?>
+                    <input type="hidden" name="visible" value="1"><button class="btn btn-sm btn-outline-success">Réactiver</button>
+                  <?php endif; ?>
+                </form>
+              </article>
             <?php endforeach; ?>
           </div>
         </div>
       <?php endif; ?>
       <div class="table-responsive">
         <table class="table table-hover align-middle">
-          <thead><tr><th>Plateforme</th><th>Source</th><th>Visibilité</th><th>Dossier</th><th>Image</th><th class="text-end">Jeux</th><th class="text-end">Actions</th></tr></thead>
+          <thead><tr><?php echo rgsx_db_sort_header('Plateforme', 'name', $platformSort, $platformDirection, $platformSortUrl); ?><?php echo rgsx_db_sort_header('Source', 'source', $platformSort, $platformDirection, $platformSortUrl); ?><?php echo rgsx_db_sort_header('Visibilité', 'visibility', $platformSort, $platformDirection, $platformSortUrl); ?><?php echo rgsx_db_sort_header('Dossier', 'folder', $platformSort, $platformDirection, $platformSortUrl); ?><?php echo rgsx_db_sort_header('Image', 'image', $platformSort, $platformDirection, $platformSortUrl); ?><th class="text-end" scope="col" aria-sort="<?php echo $platformSort === 'game_count' ? ($platformDirection === 'asc' ? 'ascending' : 'descending') : 'none'; ?>"><a class="table-sort" href="<?php echo rgsx_db_h($platformSortUrl('game_count')); ?>">Jeux <span aria-hidden="true"><?php echo $platformSort === 'game_count' ? ($platformDirection === 'asc' ? '&uarr;' : '&darr;') : '&varr;'; ?></span></a></th><th class="text-end" scope="col">Actions</th></tr></thead>
           <tbody>
           <?php foreach ($platformRows as $row): ?>
             <tr>
@@ -998,10 +1146,10 @@ $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
               <form method="post" enctype="multipart/form-data" class="row g-2 align-items-end bg-light p-3 rounded">
                 <input type="hidden" name="action" value="platform_save"><input type="hidden" name="tab" value="platforms"><input type="hidden" name="platform_id" value="<?php echo (int)$row['id']; ?>"><input type="hidden" name="platform_image" value="<?php echo rgsx_db_h($row['platform_image']); ?>">
                 <div class="col-lg-3"><label class="form-label small">Nom</label><input class="form-control" name="platform_name" value="<?php echo rgsx_db_h(rgsx_platform_display_name($row['platform_name'], $row['source'] ?? '')); ?>" required></div>
-                <div class="col-lg-2"><label class="form-label small">Source</label><input class="form-control" name="source" value="<?php echo rgsx_db_h($row['source'] ?? ''); ?>"></div>
+                <div class="col-lg-2"><label class="form-label small">Source</label><input class="form-control" name="source" list="existing-platform-sources" value="<?php echo rgsx_db_h($row['source'] ?? ''); ?>"></div>
                 <div class="col-lg-2"><label class="form-label small">Dossier</label><input class="form-control" name="folder" value="<?php echo rgsx_db_h($row['folder']); ?>" required></div>
                 <div class="col-lg-3"><label class="form-label small">Remplacer l’image</label><input class="form-control" type="file" name="platform_image_file" accept="image/*"></div>
-                <div class="col-lg-2"><label class="form-label small">Choisir image existante</label><input class="form-control" name="platform_image_existing" placeholder="Nom de fichier"></div>
+                <div class="col-lg-3"><label class="form-label small">Choisir une image du catalogue</label><select class="form-select" name="platform_image_existing"><option value="">Conserver l’image actuelle</option><?php foreach ($platformImageOptions as $imageOption): ?><option value="<?php echo (int)$imageOption['id']; ?>"><?php echo rgsx_db_h(rgsx_db_platform_label($imageOption)); ?> — <?php echo rgsx_db_h($imageOption['asset_file_name'] ?: $imageOption['platform_image']); ?></option><?php endforeach; ?></select></div>
                 <div class="col-lg-2"><button class="btn btn-success w-100">Enregistrer</button></div>
               </form>
             </td></tr>
@@ -1009,18 +1157,18 @@ $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
           </tbody>
         </table>
       </div>
-      <div class="d-flex justify-content-between align-items-center"><span class="small text-secondary"><?php echo $platformTotal ? (($platformPage - 1) * $platformPerPage + 1) . ' à ' . min($platformPage * $platformPerPage, $platformTotal) . ' sur ' . $platformTotal : 'Aucune plateforme'; ?></span><div class="btn-group"><a class="btn btn-sm btn-outline-secondary <?php echo $platformPage <= 1 ? 'disabled' : ''; ?>" href="?tab=platforms&platform_search=<?php echo urlencode($platformSearch); ?>&platform_page=<?php echo max(1, $platformPage - 1); ?>">Précédent</a><span class="btn btn-sm btn-secondary">Page <?php echo $platformPage; ?>/<?php echo $platformPages; ?></span><a class="btn btn-sm btn-outline-secondary <?php echo $platformPage >= $platformPages ? 'disabled' : ''; ?>" href="?tab=platforms&platform_search=<?php echo urlencode($platformSearch); ?>&platform_page=<?php echo min($platformPages, $platformPage + 1); ?>">Suivant</a></div></div>
+      <div class="d-flex justify-content-between align-items-center"><span class="small text-secondary"><?php echo $platformTotal ? (($platformPage - 1) * $platformPerPage + 1) . ' à ' . min($platformPage * $platformPerPage, $platformTotal) . ' sur ' . $platformTotal : 'Aucune plateforme'; ?></span><div class="btn-group"><a class="btn btn-sm btn-outline-secondary <?php echo $platformPage <= 1 ? 'disabled' : ''; ?>" href="<?php echo rgsx_db_h($platformPageUrl(max(1, $platformPage - 1))); ?>">Précédent</a><span class="btn btn-sm btn-secondary">Page <?php echo $platformPage; ?>/<?php echo $platformPages; ?></span><a class="btn btn-sm btn-outline-secondary <?php echo $platformPage >= $platformPages ? 'disabled' : ''; ?>" href="<?php echo rgsx_db_h($platformPageUrl(min($platformPages, $platformPage + 1))); ?>">Suivant</a></div></div>
     </section>
   <?php endif; ?>
 
   <?php if ($activeTab === 'games'): ?>
     <section class="panel p-4">
-      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3"><div><h2 class="h4 mb-1">Jeux</h2><div class="text-secondary small">Ajout, mise à jour et suppression d’une ligne sans recharger tout le catalogue.</div></div><form method="get" class="d-flex gap-2"><input type="hidden" name="tab" value="games"><select class="form-select" name="platform_id" onchange="this.form.submit()"><option value="">Choisir une plateforme</option><?php foreach ($platformsAll as $platform): ?><option value="<?php echo (int)$platform['id']; ?>" <?php echo $selectedPlatformId === (int)$platform['id'] ? 'selected' : ''; ?>><?php echo rgsx_db_h(rgsx_db_platform_label($platform)); ?> (<?php echo (int)$platform['game_count']; ?>)</option><?php endforeach; ?></select><input class="form-control" name="game_search" value="<?php echo rgsx_db_h($gameSearch); ?>" placeholder="Rechercher"><button class="btn btn-outline-secondary">Filtrer</button></form></div>
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3"><div><h2 class="h4 mb-1">Jeux</h2><div class="text-secondary small">Ajout, mise à jour et suppression d’une ligne sans recharger tout le catalogue.</div></div><form method="get" class="d-flex gap-2"><input type="hidden" name="tab" value="games"><input type="hidden" name="game_sort" value="<?php echo rgsx_db_h($gameSort); ?>"><input type="hidden" name="game_order" value="<?php echo rgsx_db_h($gameDirection); ?>"><select class="form-select" name="platform_id" onchange="this.form.submit()"><option value="">Choisir une plateforme</option><?php foreach ($platformsAll as $platform): ?><option value="<?php echo (int)$platform['id']; ?>" <?php echo $selectedPlatformId === (int)$platform['id'] ? 'selected' : ''; ?>><?php echo rgsx_db_h(rgsx_db_platform_label($platform)); ?> (<?php echo (int)$platform['game_count']; ?>)</option><?php endforeach; ?></select><input class="form-control" name="game_search" value="<?php echo rgsx_db_h($gameSearch); ?>" placeholder="Rechercher"><button class="btn btn-outline-secondary">Filtrer</button></form></div>
       <?php if ($selectedPlatform): ?>
         <form method="get" class="row g-2 align-items-end mb-3"><input type="hidden" name="tab" value="games"><input type="hidden" name="platform_id" value="<?php echo $selectedPlatformId; ?>"><input type="hidden" name="game_search" value="<?php echo rgsx_db_h($gameSearch); ?>"><div class="col-sm-4 col-md-3"><label class="form-label small mb-1" for="game-sort">Trier par</label><select class="form-select form-select-sm" id="game-sort" name="game_sort"><?php foreach ($gameSortOptions as $sortKey => $sortLabel): ?><option value="<?php echo rgsx_db_h($sortKey); ?>" <?php echo $gameSort === $sortKey ? 'selected' : ''; ?>><?php echo rgsx_db_h($sortLabel); ?></option><?php endforeach; ?></select></div><div class="col-sm-4 col-md-3"><label class="form-label small mb-1" for="game-order">Ordre</label><select class="form-select form-select-sm" id="game-order" name="game_order"><option value="asc" <?php echo $gameDirection === 'asc' ? 'selected' : ''; ?>>Croissant</option><option value="desc" <?php echo $gameDirection === 'desc' ? 'selected' : ''; ?>>Décroissant</option></select></div><div class="col-sm-4 col-md-2"><button class="btn btn-sm btn-outline-primary w-100">Trier</button></div></form>
         <div class="panel p-3 mb-3" style="box-shadow:none;background:#f8fbfa"><div class="d-flex justify-content-between align-items-center mb-2"><h3 class="h6 mb-0">Ajouter dans <?php echo rgsx_db_h(rgsx_db_platform_label($selectedPlatform)); ?></h3><form method="post" onsubmit="return confirm('Supprimer tous les jeux de cette plateforme ?')"><input type="hidden" name="action" value="game_clear"><input type="hidden" name="tab" value="games"><input type="hidden" name="platform_id" value="<?php echo $selectedPlatformId; ?>"><button class="btn btn-sm btn-outline-danger">Vider la plateforme</button></form></div><form method="post" class="row g-2 align-items-end"><input type="hidden" name="action" value="game_add"><input type="hidden" name="tab" value="games"><input type="hidden" name="platform_id" value="<?php echo $selectedPlatformId; ?>"><div class="col-lg-4"><label class="form-label small">Nom</label><input class="form-control" name="game_name" required></div><div class="col-lg-5"><label class="form-label small">URL</label><input class="form-control" name="game_url"></div><div class="col-lg-2"><label class="form-label small">Taille</label><input class="form-control" name="game_size"></div><div class="col-lg-1"><button class="btn btn-primary w-100">Ajouter</button></div></form></div>
-        <div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><th>Nom</th><th>URL</th><th>Taille</th><th>Mis à jour</th><th></th></tr></thead><tbody><?php foreach ($gameRows as $game): ?><tr><td><?php echo rgsx_db_h($game['name']); ?></td><td class="url-cell" title="<?php echo rgsx_db_h($game['url']); ?>"><?php echo rgsx_db_h($game['url']); ?></td><td><?php echo rgsx_db_h($game['size']); ?></td><td class="small text-secondary"><?php echo rgsx_db_h($game['updated_at']); ?></td><td class="text-end"><details><summary class="btn btn-sm btn-outline-secondary">Modifier</summary><form method="post" class="row g-2 mt-2 text-start"><input type="hidden" name="action" value="game_update"><input type="hidden" name="tab" value="games"><input type="hidden" name="game_id" value="<?php echo (int)$game['id']; ?>"><input type="hidden" name="platform_id" value="<?php echo $selectedPlatformId; ?>"><div class="col-12"><input class="form-control form-control-sm" name="game_name" value="<?php echo rgsx_db_h($game['name']); ?>" required></div><div class="col-12"><input class="form-control form-control-sm" name="game_url" value="<?php echo rgsx_db_h($game['url']); ?>"></div><div class="col-8"><input class="form-control form-control-sm" name="game_size" value="<?php echo rgsx_db_h($game['size']); ?>"></div><div class="col-4"><button class="btn btn-sm btn-success w-100">Sauver</button></div></form></details> <form method="post" class="d-inline" onsubmit="return confirm('Supprimer cette ligne ?')"><input type="hidden" name="action" value="game_delete"><input type="hidden" name="tab" value="games"><input type="hidden" name="game_id" value="<?php echo (int)$game['id']; ?>"><input type="hidden" name="platform_id" value="<?php echo $selectedPlatformId; ?>"><button class="btn btn-sm btn-outline-danger">Supprimer</button></form></td></tr><?php endforeach; ?></tbody></table></div>
-        <div class="d-flex justify-content-between align-items-center"><span class="small text-secondary"><?php echo $gameTotal ? (($gamePage - 1) * $gamePerPage + 1) . ' à ' . min($gamePage * $gamePerPage, $gameTotal) . ' sur ' . $gameTotal : 'Aucun jeu'; ?></span><div class="btn-group"><a class="btn btn-sm btn-outline-secondary <?php echo $gamePage <= 1 ? 'disabled' : ''; ?>" href="?tab=games&platform_id=<?php echo $selectedPlatformId; ?>&game_search=<?php echo urlencode($gameSearch); ?>&game_page=<?php echo max(1, $gamePage - 1); ?>">Précédent</a><span class="btn btn-sm btn-secondary">Page <?php echo $gamePage; ?>/<?php echo $gamePages; ?></span><a class="btn btn-sm btn-outline-secondary <?php echo $gamePage >= $gamePages ? 'disabled' : ''; ?>" href="?tab=games&platform_id=<?php echo $selectedPlatformId; ?>&game_search=<?php echo urlencode($gameSearch); ?>&game_page=<?php echo min($gamePages, $gamePage + 1); ?>">Suivant</a></div></div>
+        <div class="table-responsive"><table class="table table-sm table-hover"><thead><tr><?php echo rgsx_db_sort_header('Nom', 'name', $gameSort, $gameDirection, $gameSortUrl); ?><?php echo rgsx_db_sort_header('URL', 'url', $gameSort, $gameDirection, $gameSortUrl); ?><?php echo rgsx_db_sort_header('Taille', 'size', $gameSort, $gameDirection, $gameSortUrl); ?><?php echo rgsx_db_sort_header('Mis à jour', 'updated_at', $gameSort, $gameDirection, $gameSortUrl); ?><th scope="col">Actions</th></tr></thead><tbody><?php foreach ($gameRows as $game): ?><tr><td><?php echo rgsx_db_h($game['name']); ?></td><td class="url-cell" title="<?php echo rgsx_db_h($game['url']); ?>"><?php echo rgsx_db_h($game['url']); ?></td><td><?php echo rgsx_db_h($game['size']); ?></td><td class="small text-secondary"><?php echo rgsx_db_h($game['updated_at']); ?></td><td class="text-end"><details><summary class="btn btn-sm btn-outline-secondary">Modifier</summary><form method="post" class="row g-2 mt-2 text-start"><input type="hidden" name="action" value="game_update"><input type="hidden" name="tab" value="games"><input type="hidden" name="game_id" value="<?php echo (int)$game['id']; ?>"><input type="hidden" name="platform_id" value="<?php echo $selectedPlatformId; ?>"><div class="col-12"><input class="form-control form-control-sm" name="game_name" value="<?php echo rgsx_db_h($game['name']); ?>" required></div><div class="col-12"><input class="form-control form-control-sm" name="game_url" value="<?php echo rgsx_db_h($game['url']); ?>"></div><div class="col-8"><input class="form-control form-control-sm" name="game_size" value="<?php echo rgsx_db_h($game['size']); ?>"></div><div class="col-4"><button class="btn btn-sm btn-success w-100">Sauver</button></div></form></details> <form method="post" class="d-inline" onsubmit="return confirm('Supprimer cette ligne ?')"><input type="hidden" name="action" value="game_delete"><input type="hidden" name="tab" value="games"><input type="hidden" name="game_id" value="<?php echo (int)$game['id']; ?>"><input type="hidden" name="platform_id" value="<?php echo $selectedPlatformId; ?>"><button class="btn btn-sm btn-outline-danger">Supprimer</button></form></td></tr><?php endforeach; ?></tbody></table></div>
+        <div class="d-flex justify-content-between align-items-center"><span class="small text-secondary"><?php echo $gameTotal ? (($gamePage - 1) * $gamePerPage + 1) . ' à ' . min($gamePage * $gamePerPage, $gameTotal) . ' sur ' . $gameTotal : 'Aucun jeu'; ?></span><div class="btn-group"><a class="btn btn-sm btn-outline-secondary <?php echo $gamePage <= 1 ? 'disabled' : ''; ?>" href="<?php echo rgsx_db_h($gamePageUrl(max(1, $gamePage - 1))); ?>">Précédent</a><span class="btn btn-sm btn-secondary">Page <?php echo $gamePage; ?>/<?php echo $gamePages; ?></span><a class="btn btn-sm btn-outline-secondary <?php echo $gamePage >= $gamePages ? 'disabled' : ''; ?>" href="<?php echo rgsx_db_h($gamePageUrl(min($gamePages, $gamePage + 1))); ?>">Suivant</a></div></div>
       <?php else: ?><div class="alert alert-info">Ouvre une base contenant des plateformes pour commencer.</div><?php endif; ?>
     </section>
   <?php endif; ?>
@@ -1032,13 +1180,88 @@ $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
       <?php if ($lastScrape): ?>
         <div class="d-flex flex-wrap gap-2 mb-3"><?php $scrapeTotal = 0; foreach ($lastScrape as $result) { $scrapeTotal += count($result['rows'] ?? []); } ?><span class="badge text-bg-light"><?php echo count($lastScrape); ?> source(s)</span><span class="badge text-bg-success"><?php echo $scrapeTotal; ?> entrée(s)</span></div>
         <div class="result-card p-3 mb-3"><form method="post" class="row g-2 align-items-end"><input type="hidden" name="action" value="scrape_merge_all"><input type="hidden" name="tab" value="scrape"><div class="col-lg-5"><label class="form-label small">Fusionner tous les résultats dans</label><select class="form-select" name="platform_id" required><option value="">Choisir une plateforme</option><?php foreach ($platformsAll as $platform): ?><option value="<?php echo (int)$platform['id']; ?>"><?php echo rgsx_db_h(rgsx_db_platform_label($platform)); ?></option><?php endforeach; ?></select></div><div class="col-lg-3"><label class="form-label small">Mode</label><select class="form-select" name="merge_mode"><option value="upsert">Ajouter et mettre à jour</option><option value="append">Ajouter uniquement les nouveaux</option></select></div><div class="col-lg-4"><button class="btn btn-success w-100">Fusionner tous les résultats</button></div></form></div>
-        <?php foreach ($lastScrape as $index => $result): ?><article class="result-card p-3 mb-3"><div class="d-flex flex-wrap justify-content-between gap-2"><div><strong><?php echo rgsx_db_h($result['label'] ?? 'Source'); ?></strong><div class="small text-secondary"><?php echo count($result['rows'] ?? []); ?> entrée(s) · <?php echo rgsx_db_h($result['status'] ?? ''); ?></div></div><form method="post" class="d-flex flex-wrap gap-2 align-items-end"><input type="hidden" name="action" value="scrape_merge"><input type="hidden" name="tab" value="scrape"><input type="hidden" name="result_index" value="<?php echo (int)$index; ?>"><select class="form-select form-select-sm" name="platform_id" required><option value="">Plateforme cible</option><?php foreach ($platformsAll as $platform): ?><option value="<?php echo (int)$platform['id']; ?>"><?php echo rgsx_db_h(rgsx_db_platform_label($platform)); ?></option><?php endforeach; ?></select><select class="form-select form-select-sm" name="merge_mode"><option value="upsert">Ajouter / mettre à jour</option><option value="append">Ajouter seulement</option></select><button class="btn btn-sm btn-success">Fusionner</button></form></div><div class="result-rows mt-3"><table class="table table-sm mb-0"><thead><tr><th>Nom</th><th>URL</th><th>Taille</th></tr></thead><tbody><?php foreach (array_slice($result['rows'] ?? [], 0, 50) as $row): ?><tr><td><?php echo rgsx_db_h($row[0] ?? ''); ?></td><td class="url-cell" title="<?php echo rgsx_db_h($row[1] ?? ''); ?>"><?php echo rgsx_db_h($row[1] ?? ''); ?></td><td><?php echo rgsx_db_h($row[2] ?? ''); ?></td></tr><?php endforeach; ?></tbody></table><?php if (count($result['rows'] ?? []) > 50): ?><div class="small text-secondary p-2">Aperçu limité aux 50 premières entrées.</div><?php endif; ?></div></article><?php endforeach; ?>
+        <?php foreach ($lastScrape as $index => $result): ?><article class="result-card p-3 mb-3"><div class="d-flex flex-wrap justify-content-between gap-2"><div><strong><?php echo rgsx_db_h($result['label'] ?? 'Source'); ?></strong><div class="small text-secondary"><?php echo count($result['rows'] ?? []); ?> entrée(s) · <?php echo rgsx_db_h($result['status'] ?? ''); ?></div></div><form method="post" class="d-flex flex-wrap gap-2 align-items-end"><input type="hidden" name="action" value="scrape_merge"><input type="hidden" name="tab" value="scrape"><input type="hidden" name="result_index" value="<?php echo (int)$index; ?>"><select class="form-select form-select-sm" name="platform_id" required><option value="">Plateforme cible</option><?php foreach ($platformsAll as $platform): ?><option value="<?php echo (int)$platform['id']; ?>"><?php echo rgsx_db_h(rgsx_db_platform_label($platform)); ?></option><?php endforeach; ?></select><select class="form-select form-select-sm" name="merge_mode"><option value="upsert">Ajouter / mettre à jour</option><option value="append">Ajouter seulement</option></select><button class="btn btn-sm btn-success">Fusionner</button></form></div><div class="result-rows mt-3"><table class="table table-sm mb-0 js-client-sortable"><thead><tr><th scope="col" aria-sort="none"><button type="button" class="table-sort-button" data-sort-label="Nom" aria-label="Trier par Nom">Nom <span data-sort-indicator aria-hidden="true">&varr;</span></button></th><th scope="col" aria-sort="none"><button type="button" class="table-sort-button" data-sort-label="URL" aria-label="Trier par URL">URL <span data-sort-indicator aria-hidden="true">&varr;</span></button></th><th scope="col" aria-sort="none"><button type="button" class="table-sort-button" data-sort-label="Taille" aria-label="Trier par Taille">Taille <span data-sort-indicator aria-hidden="true">&varr;</span></button></th></tr></thead><tbody><?php foreach (array_slice($result['rows'] ?? [], 0, 50) as $row): ?><tr><td><?php echo rgsx_db_h($row[0] ?? ''); ?></td><td class="url-cell" title="<?php echo rgsx_db_h($row[1] ?? ''); ?>"><?php echo rgsx_db_h($row[1] ?? ''); ?></td><td><?php echo rgsx_db_h($row[2] ?? ''); ?></td></tr><?php endforeach; ?></tbody></table><?php if (count($result['rows'] ?? []) > 50): ?><div class="small text-secondary p-2">Aperçu limité aux 50 premières entrées.</div><?php endif; ?></div></article><?php endforeach; ?>
       <?php else: ?><div class="alert alert-light border">Aucun résultat en attente. Lance un scrape pour remplir cette zone.</div><?php endif; ?>
     </section>
   <?php endif; ?>
 </main>
 <script>
   const managerCsrfToken = <?php echo json_encode($csrfToken, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+  const platformTemplate = document.getElementById('platform-template');
+  const platformImageSelect = document.getElementById('new-platform-image-existing');
+  const platformImagePreview = document.getElementById('new-platform-image-preview');
+
+  if (platformTemplate) {
+    platformTemplate.addEventListener('change', () => {
+      const selected = platformTemplate.selectedOptions[0];
+      if (!selected?.value) return;
+
+      const folder = document.getElementById('new-platform-folder');
+      const source = document.getElementById('new-platform-source');
+      if (folder) folder.value = selected.dataset.folder || '';
+      if (source) source.value = selected.dataset.source || '';
+      if (platformImageSelect) {
+        platformImageSelect.value = selected.dataset.imageId || '';
+        platformImageSelect.dispatchEvent(new Event('change'));
+      }
+    });
+  }
+
+  if (platformImageSelect && platformImagePreview) {
+    platformImageSelect.addEventListener('change', () => {
+      const selected = platformImageSelect.selectedOptions[0];
+      const imageId = Number(platformImageSelect.value);
+      if (!imageId) {
+        platformImagePreview.classList.add('d-none');
+        platformImagePreview.classList.remove('d-flex');
+        return;
+      }
+
+      const image = platformImagePreview.querySelector('img');
+      const label = platformImagePreview.querySelector('span');
+      image.src = `?preview_db_image=${encodeURIComponent(imageId)}`;
+      image.onerror = () => {
+        platformImagePreview.classList.add('d-none');
+        platformImagePreview.classList.remove('d-flex');
+      };
+      label.textContent = selected.textContent.trim();
+      platformImagePreview.classList.remove('d-none');
+      platformImagePreview.classList.add('d-flex');
+    });
+  }
+
+  document.querySelectorAll('table.js-client-sortable').forEach((table) => {
+    const headers = Array.from(table.tHead.rows[0].cells);
+    headers.forEach((header, column) => {
+      const button = header.querySelector('.table-sort-button');
+      if (!button) return;
+      button.addEventListener('click', () => {
+        const sameColumn = table.dataset.sortColumn === String(column);
+        const direction = sameColumn && table.dataset.sortDirection === 'asc' ? 'desc' : 'asc';
+        table.dataset.sortColumn = String(column);
+        table.dataset.sortDirection = direction;
+        const rows = Array.from(table.tBodies[0].rows).map((row, index) => ({
+          row,
+          index,
+          value: row.cells[column].textContent.trim(),
+        }));
+        rows.sort((left, right) => {
+          const result = left.value.localeCompare(right.value, undefined, { numeric: true, sensitivity: 'base' });
+          return (direction === 'asc' ? result : -result) || left.index - right.index;
+        });
+        rows.forEach(({ row }) => table.tBodies[0].appendChild(row));
+        headers.forEach((item) => {
+          item.setAttribute('aria-sort', 'none');
+          const indicator = item.querySelector('[data-sort-indicator]');
+          if (indicator) indicator.textContent = '\u2195';
+        });
+        header.setAttribute('aria-sort', direction === 'asc' ? 'ascending' : 'descending');
+        const indicator = button.querySelector('[data-sort-indicator]');
+        if (indicator) indicator.textContent = direction === 'asc' ? '\u2191' : '\u2193';
+        button.setAttribute('aria-label', `Trier par ${button.dataset.sortLabel}, ordre ${direction === 'asc' ? 'croissant' : 'décroissant'}`);
+      });
+    });
+  });
   document.querySelectorAll('form[method="post"]').forEach((form) => {
     const token = document.createElement('input');
     token.type = 'hidden';

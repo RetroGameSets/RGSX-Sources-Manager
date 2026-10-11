@@ -33,6 +33,8 @@ Steps:
 Notes:
 - If your firewall prompts for PHP access, allow local access.
 - The built‑in server stops when you close the window that opened ("PHP Server").
+- In the **Games** tab, sizes are displayed using the normalized units **B**, **KB**, **MB**, or **GB**.
+- In **Platforms** and **Games**, click a column heading to sort the results; click it again to reverse the order. Scraper result previews can also be sorted.
 - The Manager has no built-in database host, name, or user. `RGSX_MYSQL_HOST`, `RGSX_MYSQL_PORT`, `RGSX_MYSQL_DATABASE`, and `RGSX_MYSQL_USER` may optionally prefill the login form. The password is prefilled only when the remember option is selected.
 - Remembered connection cookies are encrypted. Set `RGSX_MANAGER_REMEMBER_KEY` to keep a stable encryption key on hosted servers whose temporary directory is cleared; PHP must have `pdo_mysql` and `openssl` enabled.
 

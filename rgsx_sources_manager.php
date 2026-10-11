@@ -2526,6 +2526,25 @@ function parse_generic_links($dom, $sourceLabel, $isUrl, $urlOrFragment, $validE
   }
   return $out;
 }
+function parse_rgsx_export_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
+  $out = [];
+  foreach ($dom->getElementsByTagName('a') as $a) {
+    if (!$a->hasAttribute('data-rgsx-url')) continue;
+    $href = trim($a->getAttribute('data-rgsx-url'));
+    $name = trim($a->textContent);
+    if ($href === '' || $name === '') continue;
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    if ($ext === '' || !in_array($ext, $validExtensions, true)) continue;
+
+    $tr = $a->parentNode?->parentNode;
+    $cells = $tr instanceof DOMElement ? $tr->getElementsByTagName('td') : null;
+    $size = $cells && $cells->length > 1 ? trim(preg_replace('/\s+/', ' ', $cells->item(1)->textContent)) : '';
+    $modifiedAt = $cells && $cells->length > 2 ? trim($cells->item(2)->textContent) : '';
+    $full = $isUrl ? resolve_url($urlOrFragment, $href) : $href;
+    $out[] = [$name, $full, $size, $modifiedAt];
+  }
+  return $out;
+}
 function parse_archiveorg_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions) {
     global $__parse_debug__;
     
@@ -2801,6 +2820,8 @@ function parse_auto($html, $sourceLabel, $isUrl, $urlOrFragment, $validExtension
     libxml_use_internal_errors(true);
     @$dom->loadHTML($html);
     
+    $rgsxExportRes = parse_rgsx_export_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
+    if ($rgsxExportRes) return $rgsxExportRes;
     $res = parse_archiveorg_table($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
     if ($res) return $res;
     $archExtRes = parse_archiveorg_archext($dom, $sourceLabel, $isUrl, $urlOrFragment, $validExtensions);
