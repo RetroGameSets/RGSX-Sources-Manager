@@ -117,6 +117,7 @@ L’application se présente en 4 onglets
 ### 2) Plateformes (systems_list.json)
 - Ajouter une plateforme:
   - Sélectionnez un nom dans la liste, renseignez `platform_name` et `folder`.
+  - Dans le Manager MariaDB, le catalogue Batocera peut préremplir le nom et le dossier ; après un scrape, choisir un système Batocera absent le crée dans le catalogue lors de la fusion.
   - Optionnel: image (`platform_image_file`). Si aucune image, l’outil propose `<platform_name>.png` par défaut.
 - Liste paginée:
   - Sélecteur "Par page": 10 / 20 / 25 / 50 / 100 (20 par défaut).
@@ -139,6 +140,14 @@ L’application se présente en 4 onglets
 - Actions:
   - "Créer le ZIP": génère `games.zip` contenant `systems_list.json` (racine), `images/` et `games/`.
   - "Télécharger systems_list.json": pour récupérer uniquement ce fichier.
+
+---
+
+## Mise à jour de la liste Batocera
+
+Depuis la racine du dépôt, exécutez `php scripts/sync_batocera_systems.php` pour générer `assets/batocera_systems.json` depuis l’export brut de la [page des systèmes Batocera](https://wiki.batocera.org/systems). Sous Windows, vous pouvez utiliser le PHP fourni: `php_local_server\php.exe scripts\sync_batocera_systems.php`. Ajoutez `--dry-run` à la commande pour vérifier le téléchargement et l’extraction sans modifier le fichier.
+
+Les dossiers qui diffèrent du nom court du wiki sont maintenus dans `assets/batocera_system_overrides.json`, avec le nom court Batocera comme clé. Après synchronisation, déployez le JSON généré avec le Sources Manager.
 
 ---
 

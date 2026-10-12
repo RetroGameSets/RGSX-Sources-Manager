@@ -96,6 +96,7 @@ The application has 4 tabs.
 ### 2) Platforms (systems_list.json)
 - Add a platform:
   - Pick a name from the list, fill in `platform_name` and `folder`.
+  - In the MariaDB Manager, the Batocera catalog can prefill the name and folder; choosing a missing Batocera system as a scrape target creates it in the catalog when merging.
   - Optional: image (`platform_image_file`). If none, the tool suggests `<platform_name>.png` by default.
 - Paginated list:
   - "Per page" selector: 10 / 20 / 25 / 50 / 100 (20 by default).
@@ -118,6 +119,14 @@ The application has 4 tabs.
 - Actions:
   - "Create ZIP": generates `games.zip` containing `systems_list.json` (root), `images/`, and `games/`.
   - "Download systems_list.json": to fetch only this file.
+
+---
+
+## Updating the Batocera list
+
+From the repository root, run `php scripts/sync_batocera_systems.php` to generate `assets/batocera_systems.json` from the [Batocera systems page](https://wiki.batocera.org/systems)'s raw export. On Windows, use the bundled PHP executable: `php_local_server\php.exe scripts\sync_batocera_systems.php`. Add `--dry-run` to either command to check the download and parsing without changing the file.
+
+Folder names that differ from the wiki short name are maintained in `assets/batocera_system_overrides.json`, keyed by Batocera short name. After syncing, deploy the generated JSON with the Sources Manager.
 
 ---
 

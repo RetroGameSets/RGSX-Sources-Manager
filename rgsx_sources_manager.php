@@ -135,6 +135,11 @@ $currentScheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
 $currentHost = $_SERVER['HTTP_HOST'] ?? '127.0.0.1:8088';
 $currentScript = $_SERVER['SCRIPT_NAME'] ?? '/rgsx_sources_manager.php';
 $baseUrl = $currentScheme . '://' . $currentHost . $currentScript;
+$scriptDirectory = trim(str_replace('\\', '/', dirname($currentScript)), '/.');
+$assetBasePath = $scriptDirectory !== '' ? '/' . $scriptDirectory : '';
+$batoceraSystemsFile = __DIR__ . '/assets/batocera_systems.json';
+$batoceraSystemsVersion = is_file($batoceraSystemsFile) ? (string)filemtime($batoceraSystemsFile) : '0';
+$batoceraSystemsUrl = $assetBasePath . '/assets/batocera_systems.json?v=' . rawurlencode($batoceraSystemsVersion);
 
 // ---------------- Internationalisation (i18n) ---------------
 // Available languages
@@ -142,6 +147,9 @@ $availableLangs = ['fr','en'];
 $lang = $_POST['lang'] ?? $_GET['lang'] ?? ($_SESSION['lang'] ?? 'fr');
 if (!in_array($lang, $availableLangs, true)) { $lang = 'fr'; }
 $_SESSION['lang'] = $lang;
+$batoceraSystemsLoadError = $lang === 'fr'
+  ? 'Impossible de charger le catalogue Batocera. Vérifiez assets/batocera_systems.json puis actualisez.'
+  : 'Unable to load the Batocera catalog. Check assets/batocera_systems.json and refresh.';
 $langFile = __DIR__ . '/assets/lang/' . $lang . '.json';
 $LANG = [];
 if (is_file($langFile)) {
@@ -4646,6 +4654,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
         <script>
         // Remplir les listes déroulantes Batocera dans les résultats de scrap (noms dédiés pour éviter collisions globales)
         let rgsxScrapeBatoceraSystems = [];
+        let rgsxScrapeBatoceraLoadFailed = false;
         // Plateformes de la session (créées manuellement)
         const sessionPlatforms = <?php echo json_encode(
           isset($_SESSION['systems_list']) && is_array($_SESSION['systems_list'])
@@ -4683,13 +4692,18 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
 
         function fetchScrapeBatoceraSystems(cb) {
           if (rgsxScrapeBatoceraSystems.length) { cb && cb(); return; }
-          fetch('assets/batocera_systems.json')
-            .then(r=>r.json())
+          fetch(<?php echo json_encode($batoceraSystemsUrl); ?>, {cache: 'no-store'})
+            .then(r => {
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              return r.json();
+            })
             .then(data=>{
               if (Array.isArray(data) && data.length && Array.isArray(data[0])) {
                 try { data = data.flat(); } catch(_) { data = data[0]; }
               }
               const batoceraData = (Array.isArray(data) ? data : []).filter(d => d && typeof d === 'object' && 'name' in d && 'folder' in d);
+              if (!batoceraData.length) throw new Error('The Batocera catalog is empty or invalid.');
+              rgsxScrapeBatoceraLoadFailed = false;
               rgsxScrapeBatoceraSystems = [...batoceraData, ...sessionPlatforms].filter(d => d.name && d.folder);
               const seen = new Set();
               rgsxScrapeBatoceraSystems = rgsxScrapeBatoceraSystems.reverse().filter(d => {
@@ -4700,7 +4714,9 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
               }).reverse();
               cb && cb();
             })
-            .catch(_ => {
+            .catch(error => {
+              console.error('Unable to load Batocera platforms for scraper attachment.', error);
+              rgsxScrapeBatoceraLoadFailed = true;
               rgsxScrapeBatoceraSystems = sessionPlatforms.filter(d => d.name && d.folder);
               cb && cb();
             });
@@ -4719,6 +4735,15 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
           for (const sys of sorted) {
             const opt1 = document.createElement('option'); opt1.value = sys.name; opt1.textContent = sys.name; nameSel.appendChild(opt1);
             const opt2 = document.createElement('option'); opt2.value = sys.folder; opt2.textContent = sys.folder; folderSel.appendChild(opt2);
+          }
+          if (rgsxScrapeBatoceraLoadFailed) {
+            const errorText = <?php echo json_encode($batoceraSystemsLoadError); ?>;
+            for (const select of [nameSel, folderSel]) {
+              const errorOption = document.createElement('option');
+              errorOption.disabled = true;
+              errorOption.textContent = errorText;
+              select.appendChild(errorOption);
+            }
           }
           const urlInput = form.querySelector('.scrape-url-source');
           if (urlInput && urlInput.value) {
@@ -5267,8 +5292,11 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
   // Batocera dropdowns for platform_name/folder in tab 2
   let batoceraSystems = [];
   function loadBatoceraSystemsDropdowns() {
-    fetch('assets/batocera_systems.json')
-      .then(r => r.json())
+    fetch(<?php echo json_encode($batoceraSystemsUrl); ?>, {cache: 'no-store'})
+      .then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
       .then(data => {
         // Normalize/flatten if nested like [[{...}]]
         if (Array.isArray(data) && data.length && Array.isArray(data[0])) {
@@ -5276,6 +5304,7 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
         }
         // Assign to outer variable (used by setupBatoceraSync)
         batoceraSystems = (Array.isArray(data) ? data : []).filter(d => d && typeof d === 'object' && 'name' in d && 'folder' in d);
+        if (!batoceraSystems.length) throw new Error('The Batocera catalog is empty or invalid.');
         const nameSel = document.getElementById('batoceraPlatformName');
         const folderSel = document.getElementById('batoceraFolder');
         if (!nameSel || !folderSel) return;
@@ -5295,8 +5324,20 @@ $showSystemsAddForm = $activeTab === 'tab-systems' && $action === 'systems_add' 
           folderSel.appendChild(opt2);
         }
       })
-      .catch(_ => {
-        // Leave placeholders if fetch fails
+      .catch(error => {
+        batoceraSystems = [];
+        console.error('Unable to load Batocera platform selectors.', error);
+        const nameSel = document.getElementById('batoceraPlatformName');
+        const folderSel = document.getElementById('batoceraFolder');
+        if (!nameSel || !folderSel) return;
+        const errorText = <?php echo json_encode($batoceraSystemsLoadError); ?>;
+        for (const select of [nameSel, folderSel]) {
+          select.innerHTML = '<option value="">' + uiText.selectGeneric + '</option>';
+          const errorOption = document.createElement('option');
+          errorOption.disabled = true;
+          errorOption.textContent = errorText;
+          select.appendChild(errorOption);
+        }
       });
   }
   // Synchronize dropdowns and inputs

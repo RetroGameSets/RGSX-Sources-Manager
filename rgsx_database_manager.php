@@ -507,6 +507,92 @@ function rgsx_db_merge_all(int $platformId, string $mode): int {
   return rgsx_catalog_db_merge_games($platformId, $rows, $mode === 'append' ? 'append' : 'upsert');
 }
 
+function rgsx_db_batocera_systems(): array {
+  static $systems = null;
+  if (is_array($systems)) {
+    return $systems;
+  }
+
+  $path = __DIR__ . '/assets/batocera_systems.json';
+  $json = file_get_contents($path);
+  if ($json === false) {
+    throw new RuntimeException('Impossible de lire le catalogue Batocera : ' . $path);
+  }
+  $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+  if (!is_array($decoded)) {
+    throw new RuntimeException('Le catalogue Batocera doit contenir une liste JSON.');
+  }
+  while ($decoded !== [] && is_array($decoded[0] ?? null) && !array_key_exists('name', $decoded[0])) {
+    $flattened = [];
+    foreach ($decoded as $group) {
+      if (is_array($group)) {
+        array_push($flattened, ...$group);
+      }
+    }
+    $decoded = $flattened;
+  }
+
+  $systems = [];
+  foreach ($decoded as $index => $entry) {
+    if (!is_array($entry)) {
+      throw new RuntimeException('Entrée Batocera invalide à la position ' . $index . '.');
+    }
+    $slug = strtolower(trim((string)($entry['slug'] ?? $entry['folder'] ?? '')));
+    $name = trim((string)($entry['name'] ?? ''));
+    $folder = trim((string)($entry['folder'] ?? ''));
+    if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', $slug)
+      || !preg_match('/^[a-z0-9][a-z0-9._-]*$/i', $folder)
+      || $name === '') {
+      throw new RuntimeException('Entrée Batocera invalide à la position ' . $index . '.');
+    }
+    if (isset($systems[$slug])) {
+      throw new RuntimeException('Identifiant Batocera dupliqué : ' . $slug);
+    }
+    $systems[$slug] = ['slug' => $slug, 'name' => $name, 'folder' => $folder];
+  }
+  if ($systems === []) {
+    throw new RuntimeException('Le catalogue Batocera ne contient aucune plateforme.');
+  }
+
+  return $systems;
+}
+
+function rgsx_db_resolve_merge_platform_id(string $target): int {
+  $target = trim($target);
+  if (ctype_digit($target)) {
+    $platformId = (int)$target;
+    if ($platformId > 0 && rgsx_catalog_db_platform_by_id($platformId) !== null) {
+      return $platformId;
+    }
+    throw new InvalidArgumentException('La plateforme cible sélectionnée n’existe plus.');
+  }
+
+  if (!str_starts_with($target, 'batocera:')) {
+    throw new InvalidArgumentException('Plateforme cible invalide.');
+  }
+  $slug = substr($target, strlen('batocera:'));
+  $system = rgsx_db_batocera_systems()[$slug] ?? null;
+  if ($system === null) {
+    throw new InvalidArgumentException('Le système Batocera sélectionné est introuvable.');
+  }
+
+  $existingId = rgsx_catalog_db_find_platform_id_by_name($system['name']);
+  if ($existingId !== null) {
+    return $existingId;
+  }
+  $platformId = rgsx_catalog_db_create_or_update_platform([
+    'platform_name' => $system['name'],
+    'source' => '',
+    'folder' => $system['folder'],
+    'platform_image' => '',
+  ]);
+  if ($platformId <= 0) {
+    throw new RuntimeException('Impossible de créer la plateforme Batocera sélectionnée.');
+  }
+
+  return $platformId;
+}
+
 function rgsx_db_process_action(string $action): void {
   switch ($action) {
     case 'platform_save':
@@ -597,12 +683,30 @@ function rgsx_db_process_action(string $action): void {
       rgsx_db_redirect('scrape');
       break;
     case 'scrape_merge':
-      $count = rgsx_db_merge_result((int)($_POST['platform_id'] ?? 0), (int)($_POST['result_index'] ?? -1), (string)($_POST['merge_mode'] ?? 'upsert'));
+      $resultIndex = (int)($_POST['result_index'] ?? -1);
+      $resultRows = $_SESSION['rgsx_db_last_scrape'][$resultIndex]['rows'] ?? null;
+      if (!is_array($resultRows) || $resultRows === []) {
+        throw new RuntimeException('Aucun jeu valide dans ce résultat de scrape.');
+      }
+      $platformId = rgsx_db_resolve_merge_platform_id((string)($_POST['platform_id'] ?? ''));
+      $count = rgsx_db_merge_result($platformId, $resultIndex, (string)($_POST['merge_mode'] ?? 'upsert'));
       rgsx_db_flash($count . ' entrée(s) ajoutée(s) ou mise(s) à jour.');
       rgsx_db_redirect('scrape');
       break;
     case 'scrape_merge_all':
-      $count = rgsx_db_merge_all((int)($_POST['platform_id'] ?? 0), (string)($_POST['merge_mode'] ?? 'upsert'));
+      $scrapeResults = $_SESSION['rgsx_db_last_scrape'] ?? [];
+      $hasScrapeRows = false;
+      foreach (is_array($scrapeResults) ? $scrapeResults : [] as $result) {
+        if (is_array($result['rows'] ?? null) && $result['rows'] !== []) {
+          $hasScrapeRows = true;
+          break;
+        }
+      }
+      if (!$hasScrapeRows) {
+        throw new RuntimeException('Aucun jeu valide à fusionner.');
+      }
+      $platformId = rgsx_db_resolve_merge_platform_id((string)($_POST['platform_id'] ?? ''));
+      $count = rgsx_db_merge_all($platformId, (string)($_POST['merge_mode'] ?? 'upsert'));
       rgsx_db_flash($count . ' entrée(s) ajoutée(s) ou mise(s) à jour.');
       rgsx_db_redirect('scrape');
       break;
@@ -915,6 +1019,21 @@ $gamePageUrl = static function (int $page) use ($selectedPlatformId, $gameSearch
 };
 $lastScrape = is_array($_SESSION['rgsx_db_last_scrape'] ?? null) ? $_SESSION['rgsx_db_last_scrape'] : [];
 $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? '127.0.0.1:8088') . ($_SERVER['SCRIPT_NAME'] ?? '/data/rgsx_database_manager.php');
+$batoceraSystems = [];
+$batoceraSystemsError = '';
+try {
+  $batoceraSystems = rgsx_db_batocera_systems();
+} catch (Throwable $exception) {
+  $batoceraSystemsError = $exception->getMessage();
+}
+$existingPlatformNames = [];
+foreach ($platformsAll as $platform) {
+  $existingPlatformNames[strtolower(trim((string)($platform['platform_name'] ?? '')))] = true;
+}
+$batoceraMergeSystems = array_filter(
+  $batoceraSystems,
+  static fn(array $system): bool => !isset($existingPlatformNames[strtolower($system['name'])])
+);
 ?>
 <!doctype html>
 <html lang="fr">
@@ -1003,6 +1122,7 @@ $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
   <?php if ($message !== ''): ?><div class="alert alert-success"><?php echo rgsx_db_h($message); ?></div><?php endif; ?>
   <?php if ($error !== ''): ?><div class="alert alert-danger"><?php echo rgsx_db_h($error); ?></div><?php endif; ?>
   <?php if ($dbError !== '' && $error === ''): ?><div class="alert alert-warning">Base non ouverte : <?php echo rgsx_db_h($dbError); ?></div><?php endif; ?>
+  <?php if ($batoceraSystemsError !== ''): ?><div class="alert alert-warning">Catalogue Batocera indisponible : <?php echo rgsx_db_h($batoceraSystemsError); ?></div><?php endif; ?>
 
   <nav class="nav nav-pills gap-2 mb-3">
     <?php foreach (['database' => 'Base', 'platforms' => 'Plateformes', 'games' => 'Jeux', 'scrape' => 'Scraper'] as $tab => $label): ?>
@@ -1051,6 +1171,17 @@ $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
                 <?php endforeach; ?>
               </select>
               <div class="platform-template-help"><span aria-hidden="true">ℹ</span><span>Le dossier, la source et l’image sont repris si disponibles ; le nom reste à saisir.</span></div>
+              <label class="form-label small mt-3" for="batocera-platform-template">Ou choisir un système dans le catalogue Batocera</label>
+              <select class="form-select" id="batocera-platform-template">
+                <option value="">Choisir un système Batocera</option>
+                <?php foreach ($batoceraSystems as $system): ?>
+                  <option value="<?php echo rgsx_db_h($system['slug']); ?>"
+                    data-name="<?php echo rgsx_db_h($system['name']); ?>"
+                    data-folder="<?php echo rgsx_db_h($system['folder']); ?>">
+                    <?php echo rgsx_db_h($system['name']); ?> — <?php echo rgsx_db_h($system['folder']); ?>
+                  </option>
+                <?php endforeach; ?>
+              </select>
             </div>
           </div>
           <div class="col-12">
@@ -1187,9 +1318,37 @@ $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https'
 </main>
 <script>
   const managerCsrfToken = <?php echo json_encode($csrfToken, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+  const batoceraMergeSystems = <?php echo json_encode(array_values($batoceraMergeSystems), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE); ?>;
+  document.querySelectorAll('form').forEach(form => {
+    const action = form.querySelector('input[name="action"]')?.value;
+    if (action !== 'scrape_merge' && action !== 'scrape_merge_all') return;
+    const select = form.querySelector('select[name="platform_id"]');
+    if (!select || !batoceraMergeSystems.length) return;
+    const group = document.createElement('optgroup');
+    group.label = 'Créer à partir du catalogue Batocera';
+    for (const system of batoceraMergeSystems) {
+      const option = document.createElement('option');
+      option.value = 'batocera:' + system.slug;
+      option.textContent = 'Créer : ' + system.name + ' — ' + system.folder;
+      group.appendChild(option);
+    }
+    select.appendChild(group);
+  });
   const platformTemplate = document.getElementById('platform-template');
+  const batoceraPlatformTemplate = document.getElementById('batocera-platform-template');
+  const newPlatformName = document.getElementById('new-platform-name');
+  const newPlatformFolder = document.getElementById('new-platform-folder');
   const platformImageSelect = document.getElementById('new-platform-image-existing');
   const platformImagePreview = document.getElementById('new-platform-image-preview');
+
+  if (batoceraPlatformTemplate) {
+    batoceraPlatformTemplate.addEventListener('change', () => {
+      const selected = batoceraPlatformTemplate.selectedOptions[0];
+      if (!selected?.value) return;
+      if (newPlatformName) newPlatformName.value = selected.dataset.name || '';
+      if (newPlatformFolder) newPlatformFolder.value = selected.dataset.folder || '';
+    });
+  }
 
   if (platformTemplate) {
     platformTemplate.addEventListener('change', () => {
